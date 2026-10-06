@@ -158,9 +158,12 @@ def canon_version(text):
     if not n:
         return ''
     mode = ''
-    if any(x in n for x in ('titulky', 'subtitle', 'subtitles', ' sub ')):
+    # Match SUB/DUB also when it is the first token, e.g. Quickbook gives
+    # `SUB SK` while Excel gives `Slovak SUB`. Both must canonicalize to SUB SK.
+    tokens = set(n.split())
+    if ('sub' in tokens or 'titulky' in n or 'subtitle' in n or 'subtitles' in n):
         mode = 'SUB'
-    elif any(x in n for x in ('dabing', 'dubbed', ' dubbing', ' dub ')):
+    elif ('dub' in tokens or 'dabing' in n or 'dubbed' in n or 'dubbing' in n):
         mode = 'DUB'
     languages = []
     for canonical, variants in {
