@@ -103,6 +103,13 @@ def expected_from_excel(data, cinema, start):
 
     for row_idx in range(2, ws.max_row + 1):
         row = [ws.cell(row_idx, c).value for c in range(1, ws.max_column + 1)]
+
+        # The schedule is followed by a separate Legend / Features IN / Features OUT
+        # table.  It also contains durations such as 01:53, so it must never be
+        # interpreted as screening times.
+        if norm(row[1]) == 'legend' or norm(row[7]) == 'features in':
+            break
+
         if row[0] not in (None, ''):
             hall = str(row[0]).strip()
         film = str(row[1] or '').strip()
