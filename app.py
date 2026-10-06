@@ -2,8 +2,7 @@ from flask import Flask, render_template, request, jsonify
 from openpyxl import load_workbook
 from datetime import datetime, timedelta, date
 from io import BytesIO
-import os, re, unicodedata
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import os, re, unicodedata, requests
 
 app = Flask(__name__)
 
@@ -291,71 +290,118 @@ def parse_page_text(text, movie_titles, day):
     return results
 
 
-def scrape_day_safe(cinema, day, movie_titles):
-    """Load one day with strict time limits so a bad Cinema City page cannot hang forever."""
-    url = cinema_url(cinema, day)
-    results = []
-    diagnostic = ''
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+def _event_datetime(event):
+    dates = event.get('Dates') or event.get('dates') or {}
+    raw = dates.get('Date') or dates.get('date') or ''
+    hour = dates.get('Hour') or dates.get('hour') or ''
+    raw = str(raw).strip()
+    hour = str(hour).strip()
+    for fmt in ('%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S'):
         try:
-            context = browser.new_context(
-                locale='sk-SK',
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                viewport={'width': 1440, 'height': 1100},
-            )
-            page = context.new_page()
-            page.set_default_timeout(7000)
+            dt = datetime.strptime(raw, fmt)
+            return dt.date().isoformat(), dt.strftime('%H:%M')
+        except ValueError:
+            pass
+    m = re.search(r'(\d{2})/(\d{2})/(\d{4})', raw)
+    if m:
+        day = f'{m.group(3)}-{m.group(2)}-{m.group(1)}'
+        if re.fullmatch(r'[0-2]?\d:[0-5]\d', hour):
+            h, mi = hour.split(':')
+            return day, f'{int(h):02d}:{mi}'
+    return '', ''
+
+
+def _event_to_web(event):
+    day, tm = _event_datetime(event)
+    name = str(event.get('Name') or event.get('name') or '').strip()
+    # SK/CZ deployments can expose more metadata than the documented endpoint.
+    # Feed all descriptive values through our existing canonicalizers so we keep
+    # useful format/language information whenever it is present.
+    descriptive = []
+    for k, v in event.items():
+        if k.lower() in {'pic', 'eventid', 'exportcode', 'dates'}:
+            continue
+        if isinstance(v, (str, int, float)):
+            descriptive.append(str(v))
+    blob = ' '.join(descriptive)
+    attrs = canon_attributes(blob)
+    venue = str(event.get('VenueType') or event.get('venueType') or '').strip()
+    if norm(venue) == 'vip' and 'VIP' not in attrs:
+        attrs.append('VIP')
+    version = ''
+    # Preserve the richest raw language/version string we can find.
+    for key in ('Version', 'Language', 'PresentationMethodAndLanguage', 'LanguageVersion', 'MovieVersion'):
+        if event.get(key):
+            version = str(event[key])
+            break
+    if not version and canon_version(blob):
+        version = blob
+    return {'date': day, 'time': tm, 'film': name, 'attribute': ' '.join(attrs), 'version': version, 'hall': ''}
+
+
+def fetch_events_flat(cinema, start):
+    """V7: fetch Cinema City's structured schedule directly; no browser/Playwright."""
+    _, cid = CINEMAS[cinema]
+    endpoint = 'https://www.cinemacity.sk/tickets/EventsFlat'
+    headers = {
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': f'https://www.cinemacity.sk/cinemas/{CINEMAS[cinema][0]}/{cid}',
+    }
+    all_events, diagnostics = [], []
+    for venue_type in (1, 3):
+        params = {'TheatreId': cid, 'VenueTypeId': venue_type, 'MovieId': 0, 'Date': start.isoformat()}
+        try:
+            r = requests.get(endpoint, params=params, headers=headers, timeout=20)
+            if r.status_code != 200:
+                diagnostics.append(f'EventsFlat typ {venue_type}: HTTP {r.status_code}')
+                continue
             try:
-                response = page.goto(url, wait_until='domcontentloaded', timeout=15000)
-                status = response.status if response else None
-                if status and status >= 400:
-                    diagnostic = f'{day}: HTTP {status}'
-                else:
-                    # Never wait indefinitely for Cinema City's SPA. If showtimes do not
-                    # appear quickly, still inspect whatever text is available.
-                    try:
-                        page.wait_for_function("() => /\b[0-2]?\d:[0-5]\d\b/.test(document.body.innerText)", timeout=7000)
-                    except PlaywrightTimeoutError:
-                        pass
-                    page.wait_for_timeout(900)
-                    try:
-                        text = page.locator('body').inner_text(timeout=5000)
-                    except PlaywrightTimeoutError:
-                        text = ''
-                    results = parse_page_text(text, movie_titles, day) if text else []
-                    diagnostic = f'{day}: {len(results)} predstavení'
-            except PlaywrightTimeoutError:
-                diagnostic = f'{day}: TIMEOUT – Cinema City neodpovedalo včas'
-            except Exception as exc:
-                diagnostic = f'{day}: chyba načítania ({type(exc).__name__})'
-            finally:
-                try:
-                    page.close()
-                except Exception:
-                    pass
-                try:
-                    context.close()
-                except Exception:
-                    pass
-        finally:
-            try:
-                browser.close()
-            except Exception:
-                pass
-    return results, url, diagnostic
+                payload = r.json()
+            except ValueError:
+                diagnostics.append(f'EventsFlat typ {venue_type}: odpoveď nie je JSON')
+                continue
+            if isinstance(payload, dict):
+                payload = payload.get('events') or payload.get('Events') or payload.get('data') or []
+            if not isinstance(payload, list):
+                diagnostics.append(f'EventsFlat typ {venue_type}: neznámy formát odpovede')
+                continue
+            diagnostics.append(f'EventsFlat typ {venue_type}: {len(payload)} záznamov')
+            all_events.extend(payload)
+        except requests.RequestException as exc:
+            diagnostics.append(f'EventsFlat typ {venue_type}: chyba spojenia ({type(exc).__name__})')
+
+    # de-duplicate using event id when available, otherwise the visible identity
+    unique, seen = [], set()
+    for e in all_events:
+        dates = e.get('Dates') or e.get('dates') or {}
+        event_id = dates.get('EventId') or dates.get('eventId')
+        item = _event_to_web(e)
+        key = str(event_id) if event_id else (norm(item['film']), item['date'], item['time'], norm(item['attribute']))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+
+    wanted = {(start + timedelta(days=i)).isoformat() for i in range(7)}
+    week = [x for x in unique if x['date'] in wanted and x['time'] and x['film']]
+    diagnostics.append(f'Vybraný týždeň {start.isoformat()} – {(start + timedelta(days=6)).isoformat()}: {len(week)} predstavení')
+    return week, endpoint, diagnostics
+
+
+def scrape_day_safe(cinema, day, movie_titles):
+    # Compatibility wrapper for the V6 UI. Fetch the whole week starting at `day`
+    # and return only that date. In V7 the main endpoints use fetch_events_flat once.
+    start = datetime.strptime(day, '%Y-%m-%d').date()
+    web, url, diagnostics = fetch_events_flat(cinema, start)
+    one = [x for x in web if x['date'] == day]
+    return one, url, '; '.join(diagnostics)
 
 
 def scrape_week(cinema, start, movie_titles):
-    """Read seven days with a hard per-day timeout and continue after failures."""
-    all_results, urls, diagnostics = [], [], []
-    for i in range(7):
-        day = (start + timedelta(days=i)).isoformat()
-        parsed, url, diagnostic = scrape_day_safe(cinema, day, movie_titles)
-        urls.append(url)
-        diagnostics.append(diagnostic)
-        all_results.extend(parsed)
-    return all_results, urls, diagnostics
+    web, url, diagnostics = fetch_events_flat(cinema, start)
+    return web, [url], diagnostics
 
 def same_title(expected, web):
     candidates = [expected.get('film', ''), expected.get('original', '')]
@@ -407,7 +453,7 @@ def preview():
 
 @app.post('/api/web-preview-day')
 def web_preview_day():
-    """V6 diagnostic endpoint: one HTTP request = one Cinema City day.
+    """V7 compatibility diagnostic endpoint.
 
     This lets the browser show real progress and prevents one stuck day from
     hiding the other six days.
