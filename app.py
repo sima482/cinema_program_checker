@@ -489,8 +489,7 @@ def _language_signature(value):
 
 def _version_key(item):
     """Cinema City screening-language identity, without film/date/time."""
-    return (str(item.get('_presentation_code') or '').strip().lower(),
-            _language_signature(item.get('_languages')))
+    return str(item.get('_presentation_code') or '').strip().lower()
 
 
 def learn_quickbook_versions(expected, web):
@@ -513,7 +512,7 @@ def learn_quickbook_versions(expected, web):
         used.add(idx)
         ev = excel_version(e.get('version', ''))
         key = _version_key(web[idx])
-        if ev and (key[0] or key[1]):
+        if ev and key:
             samples[key].append(ev)
 
     mapping = {}
@@ -527,7 +526,7 @@ def learn_quickbook_versions(expected, web):
         if total >= 2 and n / total >= 0.80:
             mapping[key] = winner
         if total >= 2:
-            code = key[0] or '(bez presentationCode)'
+            code = key or '(bez presentationCode)'
             detail = ', '.join(f'{v}×{c}' for v, c in counts.most_common())
             notes.append(f'Verzia {code}: {detail}' + (f' → {winner}' if key in mapping else ' → nejednoznačné'))
 
@@ -685,6 +684,50 @@ def web_preview():
             'extra_basic': [compact_show(x) for x in extra_basic],
             'diagnostics': diagnostics, 'urls': urls,
         })
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.post('/api/check-day')
+def check_day():
+    """Check one visible day so the browser can show truthful Thu→Wed progress."""
+    try:
+        f = request.files.get('excel')
+        if not f:
+            raise ValueError('Najprv nahraj Excel.')
+        cinema = request.form.get('cinema', 'Eurovea')
+        if cinema not in CINEMAS:
+            raise ValueError('Neznáme kino.')
+        start = datetime.strptime(request.form['start'], '%Y-%m-%d').date()
+        if start.weekday() != 3:
+            raise ValueError('Začiatok programového týždňa musí byť štvrtok.')
+        day_index = int(request.form.get('day_index', '0'))
+        if day_index < 0 or day_index > 6:
+            raise ValueError('Neplatný deň kontroly.')
+        exp_all = expected_from_excel(f.read(), cinema, start)
+        day = (start + timedelta(days=day_index)).isoformat()
+        exp = [x for x in exp_all if x['date'] == day]
+        titles = known_titles_from_expected(exp_all)
+        web, url, diagnostic = scrape_day_safe(cinema, day, titles)
+        notes = learn_quickbook_versions(exp, web)
+        if not web and exp:
+            return jsonify({'ok': False, 'error': f'Cinema City nevrátilo dáta pre {day}.', 'diagnostic': diagnostic}), 502
+        errors, used = [], set()
+        for e in exp:
+            idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+            if idx is None:
+                errors.append({'type': 'missing', 'expected': compact_show(e)})
+                continue
+            used.add(idx); w = web[idx]
+            if not attributes_match(e['attribute'], w['attribute']):
+                errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
+            if not version_match(e['version'], w['version']):
+                errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
+        for i, w in enumerate(web):
+            if i not in used:
+                errors.append({'type': 'extra', 'web': compact_show(w)})
+        return jsonify({'ok': True, 'day': day, 'expected': len(exp), 'web': len(web),
+                        'errors': errors, 'diagnostic': diagnostic, 'version_notes': notes, 'url': url})
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
