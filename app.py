@@ -197,22 +197,42 @@ def excel_version(text):
     return ' '.join(x for x in (mode, lang) if x)
 
 
-def extract_movie_options(page):
-    options = page.locator('select option').all_text_contents()
-    noise = {'all', 'all films', 'vsetky filmy', 'všetky filmy', 'choose a movie', 'vybrat film', 'vybrať film'}
-    cleaned = []
-    for x in options:
-        x = re.sub(r'\s+', ' ', x).strip()
-        if len(x) > 1 and norm(x) not in {norm(y) for y in noise} and x not in cleaned:
-            cleaned.append(x)
-    # Filter out generic filter options. Movie titles are the remaining longer labels.
-    generic = {'2d','3d','4dx','vip','comfort','dolby atmos','laser by barco','superscreen','dubbed','subtitled','dabing','titulky'}
-    return [x for x in cleaned if norm(x) not in {norm(g) for g in generic}]
+def known_titles_from_expected(expected):
+    """Use the Excel titles as anchors when reading Cinema City.
+
+    This is much safer than guessing movie headings from every visible label on the site.
+    Both the local and original title are accepted.
+    """
+    titles = []
+    for item in expected or []:
+        for key in ('film', 'original'):
+            title = re.sub(r'\s+', ' ', str(item.get(key) or '')).strip()
+            if title and norm(title) not in {norm(x) for x in titles}:
+                titles.append(title)
+    return titles
+
+
+def match_known_title(line, movie_titles):
+    """Return the Excel title represented by a Cinema City heading, if any."""
+    ln = norm(line)
+    if not ln:
+        return None
+    # Prefer the longest title so one title cannot steal another title's prefix.
+    for title in sorted(movie_titles, key=lambda x: len(norm(x)), reverse=True):
+        tn = norm(title)
+        if ln == tn:
+            return title
+        # Cinema City sometimes appends a short format marker to the heading
+        # (for example IV = Infinity Vision). Accept only very small known suffixes.
+        if ln.startswith(tn + ' '):
+            suffix = ln[len(tn):].strip()
+            if suffix in {'iv', 'vip', '3d', '4dx', '4dx 3d', 'hfr'}:
+                return title
+    return None
 
 
 def parse_page_text(text, movie_titles, day):
     lines = [re.sub(r'\s+', ' ', x).strip() for x in text.splitlines() if x.strip()]
-    title_by_norm = {norm(t): t for t in movie_titles}
     results = []
     current = None
     attrs = []
@@ -224,30 +244,41 @@ def parse_page_text(text, movie_titles, day):
         if low.startswith(('o eurovea bratislava', 'o aupark bratislava', 'o polus bratislava',
                            'about eurovea bratislava', 'about aupark bratislava', 'about polus bratislava')):
             break
-        if low in title_by_norm:
-            current = title_by_norm[low]
+
+        matched_title = match_known_title(ln, movie_titles)
+        if matched_title:
+            current = matched_title
             attrs, version_raw, seen_screening_data = [], '', False
+            # A short suffix on a heading can itself be a format marker.
+            suffix = norm(ln)[len(norm(matched_title)):].strip()
+            if suffix == 'iv':
+                attrs = ['Infinity Vision']
+                seen_screening_data = True
+            elif suffix:
+                for a in canon_attributes(suffix):
+                    if a not in attrs:
+                        attrs.append(a)
+                seen_screening_data = bool(attrs)
             continue
         if not current:
             continue
 
-        # A screening's format and language appear immediately before its times.
+        # Format and language can be on separate lines or concatenated, e.g.
+        # "2DFRANCÚZŠTINA (DABING: SLOVENČINA)".
         line_attrs = canon_attributes(ln)
         if line_attrs:
             for a in line_attrs:
                 if a not in attrs:
                     attrs.append(a)
             seen_screening_data = True
-            continue
 
         cv = canon_version(ln)
         if cv:
             version_raw = ln
             seen_screening_data = True
-            continue
 
         times = parse_clock(ln)
-        if times and seen_screening_data:
+        if times and (seen_screening_data or current):
             for tm in times:
                 results.append({
                     'date': day, 'time': tm, 'film': current,
@@ -255,12 +286,19 @@ def parse_page_text(text, movie_titles, day):
                     'version': version_raw,
                     'hall': '',
                 })
-            # Next time group belongs to a new screening variant; don't leak attributes/version.
+            # Do not leak one screening variant into the next time group.
             attrs, version_raw, seen_screening_data = [], '', False
     return results
 
 
-def scrape_week(cinema, start):
+def scrape_week(cinema, start, movie_titles):
+    """Read seven Cinema City days.
+
+    IMPORTANT: each date is opened in a fresh page. Cinema City's selected date lives
+    in the URL fragment (#...). Reusing one SPA page caused subsequent page.goto()
+    calls to keep the first day's schedule, which is why V4 returned exactly 27 shows
+    for every date.
+    """
     all_results, urls, diagnostics = [], [], []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
@@ -269,36 +307,36 @@ def scrape_week(cinema, start):
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             viewport={'width': 1440, 'height': 1100},
         )
-        page = context.new_page()
         try:
             for i in range(7):
                 day = (start + timedelta(days=i)).isoformat()
                 url = cinema_url(cinema, day)
                 urls.append(url)
+                page = context.new_page()
                 try:
                     response = page.goto(url, wait_until='domcontentloaded', timeout=60000)
                     status = response.status if response else None
                     if status and status >= 400:
                         diagnostics.append(f'{day}: HTTP {status}')
                         continue
-                    # Give the JS schedule time to render, but stop early as soon as showtimes appear.
                     try:
-                        page.wait_for_function("() => /\\b[0-2]?\\d:[0-5]\\d\\b/.test(document.body.innerText)", timeout=15000)
+                        page.wait_for_function("() => /\\b[0-2]?\\d:[0-5]\\d\\b/.test(document.body.innerText)", timeout=20000)
                     except PlaywrightTimeoutError:
                         pass
-                    page.wait_for_timeout(1200)
+                    # Let the SPA finish applying the date from the hash.
+                    page.wait_for_timeout(1800)
                     text = page.locator('body').inner_text(timeout=10000)
-                    titles = extract_movie_options(page)
-                    parsed = parse_page_text(text, titles, day)
+                    parsed = parse_page_text(text, movie_titles, day)
                     diagnostics.append(f'{day}: {len(parsed)} predstavení')
                     all_results.extend(parsed)
                 except Exception as exc:
                     diagnostics.append(f'{day}: chyba načítania ({type(exc).__name__})')
+                finally:
+                    page.close()
         finally:
             context.close()
             browser.close()
     return all_results, urls, diagnostics
-
 
 def same_title(expected, web):
     candidates = [expected.get('film', ''), expected.get('original', '')]
@@ -357,12 +395,20 @@ def web_preview():
         start = datetime.strptime(request.form['start'], '%Y-%m-%d').date()
         if start.weekday() != 3:
             raise ValueError('Začiatok programového týždňa musí byť štvrtok.')
-        web, urls, diagnostics = scrape_week(cinema, start)
-        by_day = {}
+        f = request.files.get('excel')
+        if not f:
+            raise ValueError('Najprv nahraj Excel – vo V5 ho používam aj na bezpečné rozpoznanie názvov filmov na Cinema City.')
+        exp = expected_from_excel(f.read(), cinema, start)
+        titles = known_titles_from_expected(exp)
+        web, urls, diagnostics = scrape_week(cinema, start, titles)
+        by_day, expected_by_day = {}, {}
         for x in web:
             by_day[x['date']] = by_day.get(x['date'], 0) + 1
+        for x in exp:
+            expected_by_day[x['date']] = expected_by_day.get(x['date'], 0) + 1
         return jsonify({
             'ok': True, 'web': web, 'count': len(web), 'by_day': by_day,
+            'expected_by_day': expected_by_day,
             'diagnostics': diagnostics, 'urls': urls,
         })
     except Exception as exc:
@@ -383,7 +429,8 @@ def check():
             raise ValueError('Začiatok programového týždňa musí byť štvrtok.')
 
         exp = expected_from_excel(f.read(), cinema, start)
-        web, urls, diagnostics = scrape_week(cinema, start)
+        titles = known_titles_from_expected(exp)
+        web, urls, diagnostics = scrape_week(cinema, start, titles)
         days_with_data = {x['date'] for x in web}
 
         # Never produce a giant false-error report when Cinema City failed to load.
