@@ -1,3 +1,16 @@
+
+function prettyVersion(v){
+  const raw=String(v||'').trim(); if(!raw) return '';
+  const t=raw.toUpperCase().split(/\s+/);
+  const mode=t.includes('SUB')?'SUB':t.includes('DUB')?'DUB':'';
+  let lang='';
+  if(t.some(x=>['SK','SVK'].includes(x))) lang='Slovak';
+  else if(t.some(x=>['CZ','CS','CZE','CES'].includes(x))) lang='Czech';
+  else if(t.some(x=>['EN','ENG'].includes(x))) lang='English';
+  else if(t.some(x=>['HU','HUN'].includes(x))) lang='Hungarian';
+  else if(t.some(x=>['DE','GER','DEU'].includes(x))) lang='German';
+  return [lang,mode].filter(Boolean).join(' ') || raw;
+}
 const $=x=>document.querySelector(x), start=$('#start'),range=$('#range'),status=$('#status'),results=$('#results');
 function fmt(d){return new Intl.DateTimeFormat('sk-SK').format(d)}
 function upd(){let d=new Date(start.value+'T12:00:00'),e=new Date(d);e.setDate(e.getDate()+6);range.textContent=`Programový týždeň: ${fmt(d)} – ${fmt(e)} (štvrtok → streda)`}
@@ -7,8 +20,8 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 const names=['štvrtok','piatok','sobota','nedeľa','pondelok','utorok','streda'];
 function dayISO(i){let d=new Date(start.value+'T12:00:00');d.setDate(d.getDate()+i);return d.toISOString().slice(0,10)}
 function showProgress(prefix,i){status.className='status';status.innerHTML=`⏳ ${esc(prefix)} <b>${names[i]} ${fmt(new Date(dayISO(i)+'T12:00:00'))}</b>… <span class="small">(${i+1}/7)</span>`}
-function table(rows, hall=true){return `<div class="tablewrap"><table><thead><tr><th>Dátum</th><th>Čas</th><th>Film</th>${hall?'<th>Sála</th>':''}<th>Atribút</th><th>Verzia</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.date)}</td><td>${esc(x.time)}</td><td>${esc(x.film)}</td>${hall?`<td>${esc(x.hall)}</td>`:''}<td>${esc(x.attribute)}</td><td>${esc(x.version)}</td></tr>`).join('')}</tbody></table></div>`}
-function errorHtml(x){let e=x.expected,w=x.web,t=x.type==='missing'?'Chýba na webe':x.type==='extra'?'Na webe navyše':x.type==='time'?'Nesedí čas':x.type==='hall'?'Nesedí sála':x.type==='attribute'?'Nesedí atribút':'Nesedí dabing/titulky';let a=e||w;if(x.type==='time')return `<div class="err"><b>${t}</b> — ${esc(a.date)} • ${esc(a.film)}<div class="small">Excel: <b>${esc(e.time)}</b> • sála ${esc(e.hall)}<br>Cinema City: <b>${esc(w.time)}</b> • sála ${esc(w.hall)}</div></div>`;return `<div class="err"><b>${t}</b> — ${esc(a.date)} • ${esc(a.time)} • ${esc(a.film)}<div class="small">${e?`Excel: sála ${esc(e.hall)} | ${esc(e.attribute)} | ${esc(e.version)}`:''}${w?`<br>Web: sála ${esc(w.hall)} | ${esc(w.attribute)} | ${esc(w.version)}`:''}</div></div>`}
+function table(rows, hall=true){return `<div class="tablewrap"><table><thead><tr><th>Dátum</th><th>Čas</th><th>Film</th>${hall?'<th>Sála</th>':''}<th>Atribút</th><th>Verzia</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${esc(x.date)}</td><td>${esc(x.time)}</td><td>${esc(x.film)}</td>${hall?`<td>${esc(x.hall)}</td>`:''}<td>${esc(x.attribute)}</td><td>${esc(prettyVersion(x.version))}</td></tr>`).join('')}</tbody></table></div>`}
+function errorHtml(x){let e=x.expected,w=x.web,t=x.type==='missing'?'Chýba na webe':x.type==='extra'?'Na webe navyše':x.type==='time'?'Nesedí čas':x.type==='hall'?'Nesedí sála':x.type==='attribute'?'Nesedí atribút':'Nesedí dabing/titulky';let a=e||w;if(x.type==='time')return `<div class="err"><b>${t}</b> — ${esc(a.date)} • ${esc(a.film)}<div class="small">Excel: <b>${esc(e.time)}</b> • sála ${esc(e.hall)}<br>Cinema City: <b>${esc(w.time)}</b> • sála ${esc(w.hall)}</div></div>`;return `<div class="err"><b>${t}</b> — ${esc(a.date)} • ${esc(a.time)} • ${esc(a.film)}<div class="small">${e?`Excel: sála ${esc(e.hall)} | ${esc(e.attribute)} | ${esc(prettyVersion(e.version))}`:''}${w?`<br>Web: sála ${esc(w.hall)} | ${esc(w.attribute)} | ${esc(prettyVersion(w.version))}`:''}</div></div>`}
 
 $('#preview').onclick=async()=>{try{results.innerHTML='';status.className='status';status.textContent='Čítam Excel…';let r=await fetch('/api/preview',{method:'POST',body:form()}),j=await r.json();if(!j.ok)throw Error(j.error);let rows=[];for(let i=0;i<7;i++){showProgress('Spracúvam Excel:',i);rows.push(...j.expected.filter(x=>x.date===dayISO(i)));await new Promise(res=>setTimeout(res,90));}status.className='status ok';status.innerHTML=`🟢 Z Excelu som našla <b>${j.count}</b> predstavení.`;results.innerHTML=table(rows,true)}catch(e){status.className='status bad';status.textContent='⚠️ '+e.message}}
 

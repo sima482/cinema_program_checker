@@ -168,7 +168,7 @@ def canon_version(text):
     languages = []
     for canonical, variants in {
         'SK': ('slovencina', 'slovak', 'sk'),
-        'CZ': ('cestina', 'czech', 'cz'),
+        'CZ': ('cestina', 'czech', 'cz', 'cs'),
         'EN': ('anglictina', 'english', 'en'),
         'HU': ('madarcina', 'hungarian', 'hu'),
         'DE': ('nemcina', 'german', 'de'),
@@ -187,7 +187,7 @@ def excel_version(text):
     lang = ''
     lang_map = {
         'SK': ('sk', 'svk', 'slovak', 'slovencina'),
-        'CZ': ('cz', 'cze', 'czech', 'cestina'),
+        'CZ': ('cz', 'cs', 'cze', 'ces', 'czech', 'cestina'),
         'EN': ('en', 'eng', 'english', 'anglictina'),
         'HU': ('hu', 'hun', 'hungarian', 'madarcina'),
         'DE': ('de', 'ger', 'german', 'nemcina'),
