@@ -290,118 +290,168 @@ def parse_page_text(text, movie_titles, day):
     return results
 
 
-def _event_datetime(event):
-    dates = event.get('Dates') or event.get('dates') or {}
-    raw = dates.get('Date') or dates.get('date') or ''
-    hour = dates.get('Hour') or dates.get('hour') or ''
-    raw = str(raw).strip()
-    hour = str(hour).strip()
-    for fmt in ('%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%Y-%m-%dT%H:%M:%S'):
+def _flatten_values(obj):
+    """Collect descriptive scalar values from a Quickbook film/event object."""
+    out = []
+    if isinstance(obj, dict):
+        for value in obj.values():
+            out.extend(_flatten_values(value))
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            out.extend(_flatten_values(value))
+    elif isinstance(obj, (str, int, float)) and not isinstance(obj, bool):
+        out.append(str(obj))
+    return out
+
+
+def _quickbook_event_to_web(event, film, requested_day):
+    raw_dt = str(event.get('eventDateTime') or event.get('dateTime') or event.get('startTime') or '')
+    day, tm = requested_day, ''
+    if raw_dt:
         try:
-            dt = datetime.strptime(raw, fmt)
-            return dt.date().isoformat(), dt.strftime('%H:%M')
+            dt = datetime.fromisoformat(raw_dt.replace('Z', '+00:00'))
+            day, tm = dt.date().isoformat(), dt.strftime('%H:%M')
         except ValueError:
-            pass
-    m = re.search(r'(\d{2})/(\d{2})/(\d{4})', raw)
-    if m:
-        day = f'{m.group(3)}-{m.group(2)}-{m.group(1)}'
-        if re.fullmatch(r'[0-2]?\d:[0-5]\d', hour):
-            h, mi = hour.split(':')
-            return day, f'{int(h):02d}:{mi}'
-    return '', ''
+            m = re.search(r'(20\\d{2}-\\d{2}-\\d{2})[T ]([0-2]\\d:[0-5]\\d)', raw_dt)
+            if m:
+                day, tm = m.group(1), m.group(2)
+    if not tm:
+        raw_time = str(event.get('time') or event.get('start') or '')
+        m = re.search(r'([0-2]?\\d):([0-5]\\d)', raw_time)
+        if m:
+            tm = f'{int(m.group(1)):02d}:{m.group(2)}'
 
+    film_name = str(film.get('name') or film.get('title') or event.get('filmName') or event.get('name') or '').strip()
+    hall = str(event.get('auditorium') or event.get('screenName') or event.get('screen') or '').strip()
 
-def _event_to_web(event):
-    day, tm = _event_datetime(event)
-    name = str(event.get('Name') or event.get('name') or '').strip()
-    # SK/CZ deployments can expose more metadata than the documented endpoint.
-    # Feed all descriptive values through our existing canonicalizers so we keep
-    # useful format/language information whenever it is present.
-    descriptive = []
-    for k, v in event.items():
-        if k.lower() in {'pic', 'eventid', 'exportcode', 'dates'}:
-            continue
-        if isinstance(v, (str, int, float)):
-            descriptive.append(str(v))
-    blob = ' '.join(descriptive)
+    # Quickbook exposes attributeIds and often extra descriptive fields. Feed both
+    # event and film metadata through the existing canonicalizers.
+    event_blob = ' '.join(_flatten_values(event))
+    film_blob = ' '.join(_flatten_values(film))
+    blob = f'{event_blob} {film_blob}'
     attrs = canon_attributes(blob)
-    venue = str(event.get('VenueType') or event.get('venueType') or '').strip()
-    if norm(venue) == 'vip' and 'VIP' not in attrs:
-        attrs.append('VIP')
+
+    # Keep a readable raw version string. The exact SK payload is diagnosed in V8;
+    # canon_version() will extract SUB/DUB + language when those words are present.
     version = ''
-    # Preserve the richest raw language/version string we can find.
-    for key in ('Version', 'Language', 'PresentationMethodAndLanguage', 'LanguageVersion', 'MovieVersion'):
-        if event.get(key):
-            version = str(event[key])
-            break
+    for obj in (event, film):
+        for key in ('version', 'language', 'languageVersion', 'presentationMethodAndLanguage',
+                    'eventLanguage', 'filmLanguage', 'subtitleLanguage', 'dubLanguage'):
+            if obj.get(key):
+                version += (' ' if version else '') + str(obj.get(key))
     if not version and canon_version(blob):
         version = blob
-    return {'date': day, 'time': tm, 'film': name, 'attribute': ' '.join(attrs), 'version': version, 'hall': ''}
 
-
-def fetch_events_flat(cinema, start):
-    """V7: fetch Cinema City's structured schedule directly; no browser/Playwright."""
-    _, cid = CINEMAS[cinema]
-    endpoint = 'https://www.cinemacity.sk/tickets/EventsFlat'
-    headers = {
-        'X-Requested-With': 'XMLHttpRequest',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Referer': f'https://www.cinemacity.sk/cinemas/{CINEMAS[cinema][0]}/{cid}',
+    return {
+        'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
+        'version': version, 'hall': hall,
     }
-    all_events, diagnostics = [], []
-    for venue_type in (1, 3):
-        params = {'TheatreId': cid, 'VenueTypeId': venue_type, 'MovieId': 0, 'Date': start.isoformat()}
-        try:
-            r = requests.get(endpoint, params=params, headers=headers, timeout=20)
-            if r.status_code != 200:
-                diagnostics.append(f'EventsFlat typ {venue_type}: HTTP {r.status_code}')
-                continue
-            try:
-                payload = r.json()
-            except ValueError:
-                diagnostics.append(f'EventsFlat typ {venue_type}: odpoveď nie je JSON')
-                continue
-            if isinstance(payload, dict):
-                payload = payload.get('events') or payload.get('Events') or payload.get('data') or []
-            if not isinstance(payload, list):
-                diagnostics.append(f'EventsFlat typ {venue_type}: neznámy formát odpovede')
-                continue
-            diagnostics.append(f'EventsFlat typ {venue_type}: {len(payload)} záznamov')
-            all_events.extend(payload)
-        except requests.RequestException as exc:
-            diagnostics.append(f'EventsFlat typ {venue_type}: chyba spojenia ({type(exc).__name__})')
 
-    # de-duplicate using event id when available, otherwise the visible identity
+
+QUICKBOOK_GROUP_CANDIDATES = [str(x) for x in range(10100, 10121)]
+
+
+def _qb_get(base, path, timeout=12):
+    url = f'{base}{path}'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://www.cinemacity.sk/',
+    }
+    r = requests.get(url, headers=headers, timeout=timeout)
+    if r.status_code != 200:
+        return None, f'HTTP {r.status_code}', url
+    try:
+        payload = r.json()
+    except ValueError:
+        return None, 'odpoveď nie je JSON', url
+    body = payload.get('body', payload) if isinstance(payload, dict) else payload
+    return body, '', url
+
+
+def discover_quickbook_group(cinema_id, horizon):
+    """Find the SK Quickbook group instead of guessing a country group id."""
+    diagnostics = []
+    # Cinema City CZ publicly uses the same data-api-service shape with group 10101.
+    # SK's group is discovered by asking which candidate recognizes the SK cinema id.
+    for group in QUICKBOOK_GROUP_CANDIDATES:
+        base = f'https://www.cinemacity.sk/sk/data-api-service/v1/quickbook/{group}'
+        body, err, _ = _qb_get(base, f'/dates/in-cinema/{cinema_id}/until/{horizon}?attr=&lang=sk_SK', timeout=6)
+        if err:
+            continue
+        dates = body.get('dates', []) if isinstance(body, dict) else []
+        if dates:
+            diagnostics.append(f'Quickbook SK group {group}: kino {cinema_id} rozpoznané, {len(dates)} dostupných dní')
+            return group, base, diagnostics
+        # A valid group may have no dates on a far horizon; verify through cinema list.
+        body2, err2, _ = _qb_get(base, f'/cinemas/with-event/until/{horizon}?attr=&lang=sk_SK', timeout=6)
+        if not err2 and isinstance(body2, dict):
+            cinemas = body2.get('cinemas', [])
+            if any(str(c.get('id')) == str(cinema_id) for c in cinemas):
+                diagnostics.append(f'Quickbook SK group {group}: kino {cinema_id} nájdené v zozname kín')
+                return group, base, diagnostics
+    diagnostics.append('Quickbook SK: nepodarilo sa nájsť group ID, ktoré pozná vybrané kino')
+    return None, None, diagnostics
+
+
+def fetch_quickbook_week(cinema, start):
+    """V8: fetch exact Thu-Wed schedule from Cinema City's public Quickbook JSON API."""
+    _, cid = CINEMAS[cinema]
+    end = start + timedelta(days=6)
+    horizon = (end + timedelta(days=1)).isoformat()
+    group, base, diagnostics = discover_quickbook_group(cid, horizon)
+    if not base:
+        return [], [], diagnostics
+
+    web, urls = [], []
+    for i in range(7):
+        day = (start + timedelta(days=i)).isoformat()
+        body, err, url = _qb_get(base, f'/film-events/in-cinema/{cid}/at-date/{day}?attr=&lang=sk_SK', timeout=20)
+        urls.append(url)
+        if err:
+            diagnostics.append(f'{day}: {err}')
+            continue
+        if not isinstance(body, dict):
+            diagnostics.append(f'{day}: neznámy formát odpovede')
+            continue
+        films = {str(f.get('id')): f for f in body.get('films', []) if isinstance(f, dict)}
+        events = [e for e in body.get('events', []) if isinstance(e, dict)]
+        added = 0
+        for event in events:
+            film = films.get(str(event.get('filmId')), {})
+            item = _quickbook_event_to_web(event, film, day)
+            if item['film'] and item['time']:
+                web.append(item)
+                added += 1
+        diagnostics.append(f'{day}: Quickbook {len(events)} eventov, použiteľných {added}')
+        if events and i == 0:
+            # Compact schema diagnostic helps us finish attribute/version mapping without DevTools.
+            ekeys = ', '.join(sorted(events[0].keys()))
+            fkeys = ', '.join(sorted(next(iter(films.values())).keys())) if films else '—'
+            diagnostics.append(f'Polia eventu: {ekeys}')
+            diagnostics.append(f'Polia filmu: {fkeys}')
+
+    # De-duplicate conservatively by the visible screening identity.
     unique, seen = [], set()
-    for e in all_events:
-        dates = e.get('Dates') or e.get('dates') or {}
-        event_id = dates.get('EventId') or dates.get('eventId')
-        item = _event_to_web(e)
-        key = str(event_id) if event_id else (norm(item['film']), item['date'], item['time'], norm(item['attribute']))
+    for item in web:
+        key = (item['date'], item['time'], norm(item['film']), norm(item['hall']), norm(item['attribute']), norm(item['version']))
         if key in seen:
             continue
         seen.add(key)
         unique.append(item)
-
-    wanted = {(start + timedelta(days=i)).isoformat() for i in range(7)}
-    week = [x for x in unique if x['date'] in wanted and x['time'] and x['film']]
-    diagnostics.append(f'Vybraný týždeň {start.isoformat()} – {(start + timedelta(days=6)).isoformat()}: {len(week)} predstavení')
-    return week, endpoint, diagnostics
+    diagnostics.append(f'Quickbook spolu: {len(unique)} predstavení pre {start.isoformat()} – {end.isoformat()}')
+    return unique, urls, diagnostics
 
 
 def scrape_day_safe(cinema, day, movie_titles):
-    # Compatibility wrapper for the V6 UI. Fetch the whole week starting at `day`
-    # and return only that date. In V7 the main endpoints use fetch_events_flat once.
     start = datetime.strptime(day, '%Y-%m-%d').date()
-    web, url, diagnostics = fetch_events_flat(cinema, start)
+    web, urls, diagnostics = fetch_quickbook_week(cinema, start)
     one = [x for x in web if x['date'] == day]
-    return one, url, '; '.join(diagnostics)
+    return one, (urls[0] if urls else ''), '; '.join(diagnostics)
 
 
 def scrape_week(cinema, start, movie_titles):
-    web, url, diagnostics = fetch_events_flat(cinema, start)
-    return web, [url], diagnostics
+    return fetch_quickbook_week(cinema, start)
 
 def same_title(expected, web):
     candidates = [expected.get('film', ''), expected.get('original', '')]
