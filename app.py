@@ -291,51 +291,70 @@ def parse_page_text(text, movie_titles, day):
     return results
 
 
-def scrape_week(cinema, start, movie_titles):
-    """Read seven Cinema City days.
-
-    IMPORTANT: each date is opened in a fresh page. Cinema City's selected date lives
-    in the URL fragment (#...). Reusing one SPA page caused subsequent page.goto()
-    calls to keep the first day's schedule, which is why V4 returned exactly 27 shows
-    for every date.
-    """
-    all_results, urls, diagnostics = [], [], []
+def scrape_day_safe(cinema, day, movie_titles):
+    """Load one day with strict time limits so a bad Cinema City page cannot hang forever."""
+    url = cinema_url(cinema, day)
+    results = []
+    diagnostic = ''
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
-        context = browser.new_context(
-            locale='sk-SK',
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            viewport={'width': 1440, 'height': 1100},
-        )
         try:
-            for i in range(7):
-                day = (start + timedelta(days=i)).isoformat()
-                url = cinema_url(cinema, day)
-                urls.append(url)
-                page = context.new_page()
-                try:
-                    response = page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                    status = response.status if response else None
-                    if status and status >= 400:
-                        diagnostics.append(f'{day}: HTTP {status}')
-                        continue
+            context = browser.new_context(
+                locale='sk-SK',
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                viewport={'width': 1440, 'height': 1100},
+            )
+            page = context.new_page()
+            page.set_default_timeout(7000)
+            try:
+                response = page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                status = response.status if response else None
+                if status and status >= 400:
+                    diagnostic = f'{day}: HTTP {status}'
+                else:
+                    # Never wait indefinitely for Cinema City's SPA. If showtimes do not
+                    # appear quickly, still inspect whatever text is available.
                     try:
-                        page.wait_for_function("() => /\\b[0-2]?\\d:[0-5]\\d\\b/.test(document.body.innerText)", timeout=20000)
+                        page.wait_for_function("() => /\b[0-2]?\d:[0-5]\d\b/.test(document.body.innerText)", timeout=7000)
                     except PlaywrightTimeoutError:
                         pass
-                    # Let the SPA finish applying the date from the hash.
-                    page.wait_for_timeout(1800)
-                    text = page.locator('body').inner_text(timeout=10000)
-                    parsed = parse_page_text(text, movie_titles, day)
-                    diagnostics.append(f'{day}: {len(parsed)} predstavení')
-                    all_results.extend(parsed)
-                except Exception as exc:
-                    diagnostics.append(f'{day}: chyba načítania ({type(exc).__name__})')
-                finally:
+                    page.wait_for_timeout(900)
+                    try:
+                        text = page.locator('body').inner_text(timeout=5000)
+                    except PlaywrightTimeoutError:
+                        text = ''
+                    results = parse_page_text(text, movie_titles, day) if text else []
+                    diagnostic = f'{day}: {len(results)} predstavení'
+            except PlaywrightTimeoutError:
+                diagnostic = f'{day}: TIMEOUT – Cinema City neodpovedalo včas'
+            except Exception as exc:
+                diagnostic = f'{day}: chyba načítania ({type(exc).__name__})'
+            finally:
+                try:
                     page.close()
+                except Exception:
+                    pass
+                try:
+                    context.close()
+                except Exception:
+                    pass
         finally:
-            context.close()
-            browser.close()
+            try:
+                browser.close()
+            except Exception:
+                pass
+    return results, url, diagnostic
+
+
+def scrape_week(cinema, start, movie_titles):
+    """Read seven days with a hard per-day timeout and continue after failures."""
+    all_results, urls, diagnostics = [], [], []
+    for i in range(7):
+        day = (start + timedelta(days=i)).isoformat()
+        parsed, url, diagnostic = scrape_day_safe(cinema, day, movie_titles)
+        urls.append(url)
+        diagnostics.append(diagnostic)
+        all_results.extend(parsed)
     return all_results, urls, diagnostics
 
 def same_title(expected, web):
@@ -384,6 +403,39 @@ def preview():
         return jsonify({'ok': True, 'expected': exp, 'count': len(exp)})
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
+
+
+@app.post('/api/web-preview-day')
+def web_preview_day():
+    """V6 diagnostic endpoint: one HTTP request = one Cinema City day.
+
+    This lets the browser show real progress and prevents one stuck day from
+    hiding the other six days.
+    """
+    try:
+        cinema = request.form.get('cinema', 'Eurovea')
+        if cinema not in CINEMAS:
+            raise ValueError('Neznáme kino.')
+        start = datetime.strptime(request.form['start'], '%Y-%m-%d').date()
+        if start.weekday() != 3:
+            raise ValueError('Začiatok programového týždňa musí byť štvrtok.')
+        day_index = int(request.form.get('day_index', '0'))
+        if day_index < 0 or day_index > 6:
+            raise ValueError('Neplatný deň diagnostiky.')
+        f = request.files.get('excel')
+        if not f:
+            raise ValueError('Najprv nahraj Excel.')
+        exp = expected_from_excel(f.read(), cinema, start)
+        titles = known_titles_from_expected(exp)
+        day = (start + timedelta(days=day_index)).isoformat()
+        web, url, diagnostic = scrape_day_safe(cinema, day, titles)
+        expected_count = sum(1 for x in exp if x['date'] == day)
+        return jsonify({
+            'ok': True, 'day': day, 'web': web, 'count': len(web),
+            'expected_count': expected_count, 'diagnostic': diagnostic, 'url': url,
+        })
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
 
 
 @app.post('/api/web-preview')
