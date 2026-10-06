@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V19'
+BUILD_VERSION = 'V20'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -623,30 +623,33 @@ def _version_parts(value, excel=False):
 
 
 def version_match(expected, actual):
-    """A version error exists only when both sides explicitly contradict.
+    """Return False ONLY for an explicit contradiction.
 
-    SUB / Slovak SUB -> OK
-    SUB / Czech SUB -> OK
-    Czech SUB / Slovak SUB -> mismatch
-    SUB / Slovak -> OK (web has no explicit SUB/DUB)
-    Czech DUB / DUB CS -> OK
+    Missing detail is never a mismatch. Examples:
+      SUB vs Slovak SUB -> True
+      SUB vs Czech SUB -> True
+      SUB vs Slovak -> True
+      Czech SUB vs Slovak SUB -> False
+      Czech DUB vs DUB CS -> True
     """
     e_mode, e_lang = _version_parts(expected, excel=True)
     w_mode, w_lang = _version_parts(actual, excel=False)
+
+    # Compare SUB/DUB only when BOTH sources explicitly state the mode.
     if e_mode and w_mode and e_mode != w_mode:
         return False
+    # Compare language only when BOTH sources explicitly state the language.
     if e_lang and w_lang and e_lang != w_lang:
         return False
     return True
 
 
-def filter_noncontradictory_version_errors(errors):
-    """Final safety net: only keep SUB/DUB errors that are explicit contradictions.
+def explicit_version_conflict(expected, actual):
+    """Single source of truth used by all check endpoints."""
+    return not version_match(expected, actual)
 
-    This intentionally runs after matching. A bare SUB/DUB means the source does
-    not specify the target language, so it can never conflict with SUB SK/SUB CZ.
-    A bare language on the web likewise does not prove SUB vs DUB.
-    """
+def filter_noncontradictory_version_errors(errors):
+    """Never let an incomplete version create a false error."""
     out = []
     for err in errors:
         if err.get('type') != 'version':
@@ -654,11 +657,7 @@ def filter_noncontradictory_version_errors(errors):
             continue
         e = err.get('expected') or {}
         w = err.get('web') or {}
-        e_mode, e_lang = _version_parts(e.get('version', ''), excel=True)
-        w_mode, w_lang = _version_parts(w.get('version', ''), excel=False)
-        mode_conflict = bool(e_mode and w_mode and e_mode != w_mode)
-        lang_conflict = bool(e_lang and w_lang and e_lang != w_lang)
-        if mode_conflict or lang_conflict:
+        if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
             out.append(err)
     return out
 
@@ -893,7 +892,7 @@ def check_day():
                 errors.append({'type': 'hall', 'expected': compact_show(e), 'web': compact_show(w)})
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
-            if not version_match(e['version'], w['version']):
+            if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
                 errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
         for i, w in enumerate(web):
             if i not in used:
@@ -954,7 +953,7 @@ def check():
             w = web[idx]
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': e, 'web': w})
-            if not version_match(e['version'], w['version']):
+            if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
                 errors.append({'type': 'version', 'expected': e, 'web': w})
 
         for i, w in enumerate(web):
