@@ -360,6 +360,24 @@ def _quickbook_event_to_web(event, film, requested_day):
     event_blob = ' '.join(_flatten_values(event))
     attrs = canon_attributes(event_blob)
     version = _clean_version_from_quickbook(event, film)
+    # Quickbook exposes localisation explicitly in attributeIds, e.g.
+    # `subbed` + `first-subbed-lang-sk` or `dubbed` + `first-dubbed-lang-sk`.
+    # This is independent Cinema City data, so unlike the old presentationCode
+    # approach it does not learn the answer from the uploaded Excel.
+    attr_ids = [norm(x).replace(' ', '-') for x in (event.get('attributeIds') or [])]
+    mode = 'SUB' if 'subbed' in attr_ids else ('DUB' if 'dubbed' in attr_ids else '')
+    target = ''
+    prefixes = ('first-subbed-lang-', 'subbed-lang-') if mode == 'SUB' else ('first-dubbed-lang-', 'dubbed-lang-')
+    if mode:
+        for aid in attr_ids:
+            for prefix in prefixes:
+                if aid.startswith(prefix):
+                    target = aid[len(prefix):].upper()
+                    break
+            if target:
+                break
+    if mode:
+        version = ' '.join(x for x in (mode, target) if x)
 
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
@@ -493,53 +511,8 @@ def _version_key(item):
 
 
 def learn_quickbook_versions(expected, web):
-    """Decode SK Quickbook language codes from the week's matched screenings.
-
-    Quickbook exposes the original language in `languages`; treating that value as
-    the dubbing/subtitle language caused false EN errors. `presentationCode` is the
-    screening-version code. We learn its meaning from repeated, independently
-    matched film+date+time rows in the uploaded schedule. A single odd Excel row
-    cannot redefine a code: mappings are accepted only when the same value wins
-    clearly among all occurrences.
-    """
-    from collections import defaultdict, Counter
-    samples = defaultdict(list)
-    used = set()
-    for e in expected:
-        idx = best_match_index(e, web, used)
-        if idx is None:
-            continue
-        used.add(idx)
-        ev = excel_version(e.get('version', ''))
-        key = _version_key(web[idx])
-        if ev and key:
-            samples[key].append(ev)
-
-    mapping = {}
-    notes = []
-    for key, values in samples.items():
-        counts = Counter(values)
-        winner, n = counts.most_common(1)[0]
-        total = len(values)
-        # Repeated codes must have a strong consensus. For a code occurring once,
-        # keep it unmapped so one Excel typo can never teach the checker a rule.
-        if total >= 2 and n / total >= 0.80:
-            mapping[key] = winner
-        if total >= 2:
-            code = key or '(bez presentationCode)'
-            detail = ', '.join(f'{v}×{c}' for v, c in counts.most_common())
-            notes.append(f'Verzia {code}: {detail}' + (f' → {winner}' if key in mapping else ' → nejednoznačné'))
-
-    for w in web:
-        learned = mapping.get(_version_key(w))
-        if learned:
-            w['version'] = learned
-        else:
-            # Do not present original-language metadata (e.g. EN) as SUB/DUB.
-            # Unknown codes stay blank and are reported as "neviem overiť" rather
-            # than as a false mismatch.
-            w['version'] = ''
-    return notes
+    """Compatibility hook. V13 reads SUB/DUB directly from Quickbook attributeIds."""
+    return []
 
 
 def same_title(expected, web):
@@ -636,6 +609,56 @@ def basic_unmatched(expected, web):
             used.add(idx)
     extra = [w for i, w in enumerate(web) if i not in used]
     return missing, extra
+
+
+def reconcile_time_errors(errors):
+    """Merge missing+extra rows for the same film/day into one `time` error.
+
+    Hall and format are used to choose the right pair when the same title has
+    multiple screenings. This makes a real 12:20 vs 12:00 problem say
+    "Nesedí čas" instead of two misleading missing/extra messages.
+    """
+    missing = [(i, x) for i, x in enumerate(errors) if x.get('type') == 'missing']
+    extra = [(i, x) for i, x in enumerate(errors) if x.get('type') == 'extra']
+    paired_m, paired_x, merged = set(), set(), []
+    for mi, m in missing:
+        e = m.get('expected', {})
+        candidates = []
+        for xi, x in extra:
+            if xi in paired_x:
+                continue
+            w = x.get('web', {})
+            if e.get('date') != w.get('date') or not same_title(e, w):
+                continue
+            score = 0
+            hm = hall_match(e.get('hall',''), w.get('hall',''))
+            if hm is True: score += 100
+            elif hm is False: score -= 100
+            ea, wa = set(canon_attributes(e.get('attribute',''))), set(canon_attributes(w.get('attribute','')))
+            score += 20 * len(ea & wa)
+            score -= 10 * len(ea - wa)
+            # Prefer the nearest time if metadata ties.
+            try:
+                eh, em = map(int, e.get('time','0:0').split(':'))
+                wh, wm = map(int, w.get('time','0:0').split(':'))
+                distance = abs((eh*60+em)-(wh*60+wm))
+            except Exception:
+                distance = 9999
+            candidates.append((score, -distance, xi, x))
+        if candidates:
+            candidates.sort(reverse=True, key=lambda z:(z[0],z[1]))
+            score, _, xi, x = candidates[0]
+            # Require either matching hall/format evidence, or a unique same-title candidate.
+            if score > 0 or len(candidates) == 1:
+                paired_m.add(mi); paired_x.add(xi)
+                merged.append({'type':'time','expected':e,'web':x.get('web',{})})
+    out=[]
+    for i,x in enumerate(errors):
+        if (x.get('type')=='missing' and i in paired_m) or (x.get('type')=='extra' and i in paired_x):
+            continue
+        out.append(x)
+    out.extend(merged)
+    return out
 
 
 def compact_show(item):
@@ -787,6 +810,7 @@ def check_day():
         for i, w in enumerate(web):
             if i not in used:
                 errors.append({'type': 'extra', 'web': compact_show(w)})
+        errors = reconcile_time_errors(errors)
         return jsonify({'ok': True, 'day': day, 'expected': len(exp), 'web': len(web),
                         'errors': errors, 'diagnostic': diagnostic, 'version_notes': notes, 'url': url})
     except Exception as exc:
@@ -847,6 +871,7 @@ def check():
         for i, w in enumerate(web):
             if i not in used:
                 errors.append({'type': 'extra', 'web': w})
+        errors = reconcile_time_errors(errors)
 
         return jsonify({
             'ok': True, 'expected': len(exp), 'web': len(web), 'errors': errors,
