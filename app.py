@@ -506,7 +506,7 @@ def learn_quickbook_versions(expected, web):
     samples = defaultdict(list)
     used = set()
     for e in expected:
-        idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+        idx = best_match_index(e, web, used)
         if idx is None:
             continue
         used.add(idx)
@@ -552,6 +552,64 @@ def compatible(e, w):
     return e['date'] == w['date'] and e['time'] == w['time'] and same_title(e, w)
 
 
+def hall_signature(value):
+    """Normalize Excel `Sala 3 VIP` and Quickbook `VIP3` to the same identity."""
+    n = norm(value)
+    nums = re.findall(r'\d+', n)
+    number = nums[-1] if nums else ''
+    vip = 'vip' in n
+    # A plain number is enough for normal halls; VIP must stay separate.
+    return ('vip' if vip else 'hall', number)
+
+
+def hall_match(expected, actual):
+    e = hall_signature(expected)
+    w = hall_signature(actual)
+    if not e[1] or not w[1]:
+        return None
+    return e == w
+
+
+def match_score(e, w):
+    """Rank duplicate film+time candidates using hall and screening format.
+
+    Cinema City can have the same film at exactly the same time in VIP and a
+    normal/laser hall. V11 paired those rows by list order, creating two false
+    errors. The title/date/time remains mandatory; hall and attributes decide
+    which duplicate belongs together.
+    """
+    if not compatible(e, w):
+        return None
+    score = 0
+    hm = hall_match(e.get('hall', ''), w.get('hall', ''))
+    if hm is True:
+        score += 100
+    elif hm is False:
+        score -= 100
+    ea = set(canon_attributes(e.get('attribute', '')))
+    wa = set(canon_attributes(w.get('attribute', '')))
+    if ea and wa:
+        score += 20 * len(ea & wa)
+        score -= 10 * len(ea - wa)
+    elif not ea:
+        score += 1
+    return score
+
+
+def best_match_index(e, web, used):
+    candidates = []
+    for i, w in enumerate(web):
+        if i in used:
+            continue
+        score = match_score(e, w)
+        if score is not None:
+            candidates.append((score, i))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: (-x[0], x[1]))
+    return candidates[0][1]
+
+
 def attributes_match(expected, actual):
     e = set(canon_attributes(expected))
     w = set(canon_attributes(actual))
@@ -571,7 +629,7 @@ def basic_unmatched(expected, web):
     used = set()
     missing = []
     for e in expected:
-        idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+        idx = best_match_index(e, web, used)
         if idx is None:
             missing.append(e)
         else:
@@ -714,11 +772,14 @@ def check_day():
             return jsonify({'ok': False, 'error': f'Cinema City nevrátilo dáta pre {day}.', 'diagnostic': diagnostic}), 502
         errors, used = [], set()
         for e in exp:
-            idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+            idx = best_match_index(e, web, used)
             if idx is None:
                 errors.append({'type': 'missing', 'expected': compact_show(e)})
                 continue
             used.add(idx); w = web[idx]
+            hm = hall_match(e.get('hall', ''), w.get('hall', ''))
+            if hm is False:
+                errors.append({'type': 'hall', 'expected': compact_show(e), 'web': compact_show(w)})
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
             if not version_match(e['version'], w['version']):
@@ -772,7 +833,7 @@ def check():
 
         errors, used = [], set()
         for e in exp:
-            idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+            idx = best_match_index(e, web, used)
             if idx is None:
                 errors.append({'type': 'missing', 'expected': e})
                 continue
