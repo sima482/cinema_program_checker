@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V18'
+BUILD_VERSION = 'V19'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -640,6 +640,28 @@ def version_match(expected, actual):
     return True
 
 
+def filter_noncontradictory_version_errors(errors):
+    """Final safety net: only keep SUB/DUB errors that are explicit contradictions.
+
+    This intentionally runs after matching. A bare SUB/DUB means the source does
+    not specify the target language, so it can never conflict with SUB SK/SUB CZ.
+    A bare language on the web likewise does not prove SUB vs DUB.
+    """
+    out = []
+    for err in errors:
+        if err.get('type') != 'version':
+            out.append(err)
+            continue
+        e = err.get('expected') or {}
+        w = err.get('web') or {}
+        e_mode, e_lang = _version_parts(e.get('version', ''), excel=True)
+        w_mode, w_lang = _version_parts(w.get('version', ''), excel=False)
+        mode_conflict = bool(e_mode and w_mode and e_mode != w_mode)
+        lang_conflict = bool(e_lang and w_lang and e_lang != w_lang)
+        if mode_conflict or lang_conflict:
+            out.append(err)
+    return out
+
 def basic_unmatched(expected, web):
     """Find only film/date/time differences, before attribute/version checks."""
     used = set()
@@ -877,6 +899,7 @@ def check_day():
             if i not in used:
                 errors.append({'type': 'extra', 'web': compact_show(w)})
         errors = reconcile_time_errors(errors)
+        errors = filter_noncontradictory_version_errors(errors)
         return jsonify({'ok': True, 'day': day, 'expected': len(exp), 'web': len(web),
                         'errors': errors, 'diagnostic': diagnostic, 'version_notes': notes, 'url': url, 'build': BUILD_VERSION})
     except Exception as exc:
@@ -938,6 +961,7 @@ def check():
             if i not in used:
                 errors.append({'type': 'extra', 'web': w})
         errors = reconcile_time_errors(errors)
+        errors = filter_noncontradictory_version_errors(errors)
 
         return jsonify({
             'ok': True, 'expected': len(exp), 'web': len(web), 'errors': errors,
