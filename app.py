@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V17'
+BUILD_VERSION = 'V18'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -711,6 +711,29 @@ def compact_show(item):
         'attribute': item.get('attribute', ''), 'version': item.get('version', ''),
     }
 
+
+
+@app.after_request
+def no_cache(response):
+    # During active development never let Render/browser serve an older API/static response.
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
+@app.get('/api/version')
+def api_version():
+    cases = [
+        ('SUB', 'Slovak SUB', True),
+        ('SUB', 'Czech SUB', True),
+        ('Czech SUB', 'Czech SUB', True),
+        ('Czech SUB', 'Slovak SUB', False),
+        ('Czech DUB', 'DUB CS', True),
+        ('SUB', 'Slovak', True),
+    ]
+    tests = [{'excel': a, 'web': b, 'expected': want, 'got': version_match(a,b),
+              'ok': version_match(a,b) == want} for a,b,want in cases]
+    return jsonify({'ok': all(x['ok'] for x in tests), 'build': BUILD_VERSION, 'tests': tests})
 
 @app.get('/')
 def home():
