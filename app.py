@@ -348,6 +348,27 @@ def preview():
         return jsonify({'ok': False, 'error': str(exc)}), 400
 
 
+@app.post('/api/web-preview')
+def web_preview():
+    try:
+        cinema = request.form.get('cinema', 'Eurovea')
+        if cinema not in CINEMAS:
+            raise ValueError('Neznáme kino.')
+        start = datetime.strptime(request.form['start'], '%Y-%m-%d').date()
+        if start.weekday() != 3:
+            raise ValueError('Začiatok programového týždňa musí byť štvrtok.')
+        web, urls, diagnostics = scrape_week(cinema, start)
+        by_day = {}
+        for x in web:
+            by_day[x['date']] = by_day.get(x['date'], 0) + 1
+        return jsonify({
+            'ok': True, 'web': web, 'count': len(web), 'by_day': by_day,
+            'diagnostics': diagnostics, 'urls': urls,
+        })
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
 @app.post('/api/check')
 def check():
     try:
