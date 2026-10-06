@@ -304,6 +304,37 @@ def _flatten_values(obj):
     return out
 
 
+def _clean_hall(event):
+    """Cinema City Quickbook uses auditoriumTinyName for the public hall label."""
+    value = (event.get('auditoriumTinyName') or event.get('auditoriumName') or
+             event.get('auditorium') or event.get('screenName') or event.get('screen') or '')
+    return re.sub(r'\s+', ' ', str(value)).strip()
+
+
+def _clean_version_from_quickbook(event, film):
+    """Return only SUB/DUB + target language; never expose the raw API blob."""
+    # Prefer dedicated fields if Cinema City supplies them.
+    parts = []
+    keys = ('presentationMethodAndLanguage', 'languageVersion', 'eventLanguage',
+            'filmLanguage', 'subtitleLanguage', 'subtitlesLanguage', 'dubLanguage',
+            'dubbingLanguage', 'version', 'language')
+    for obj in (event, film):
+        for key in keys:
+            value = obj.get(key)
+            if value not in (None, '', [], {}):
+                parts.extend(_flatten_values(value))
+    dedicated = ' '.join(parts)
+    cv = canon_version(dedicated)
+    if cv:
+        return cv
+
+    # Some Quickbook installations encode the presentation in descriptive
+    # event attributes instead of a dedicated language property.  Looking at
+    # the event only avoids accidentally inheriting a movie-wide format.
+    event_text = ' '.join(_flatten_values(event))
+    return canon_version(event_text)
+
+
 def _quickbook_event_to_web(event, film, requested_day):
     raw_dt = str(event.get('eventDateTime') or event.get('dateTime') or event.get('startTime') or '')
     day, tm = requested_day, ''
@@ -312,35 +343,23 @@ def _quickbook_event_to_web(event, film, requested_day):
             dt = datetime.fromisoformat(raw_dt.replace('Z', '+00:00'))
             day, tm = dt.date().isoformat(), dt.strftime('%H:%M')
         except ValueError:
-            m = re.search(r'(20\\d{2}-\\d{2}-\\d{2})[T ]([0-2]\\d:[0-5]\\d)', raw_dt)
+            m = re.search(r'(20\d{2}-\d{2}-\d{2})[T ]([0-2]\d:[0-5]\d)', raw_dt)
             if m:
                 day, tm = m.group(1), m.group(2)
     if not tm:
         raw_time = str(event.get('time') or event.get('start') or '')
-        m = re.search(r'([0-2]?\\d):([0-5]\\d)', raw_time)
+        m = re.search(r'([0-2]?\d):([0-5]\d)', raw_time)
         if m:
             tm = f'{int(m.group(1)):02d}:{m.group(2)}'
 
     film_name = str(film.get('name') or film.get('title') or event.get('filmName') or event.get('name') or '').strip()
-    hall = str(event.get('auditorium') or event.get('screenName') or event.get('screen') or '').strip()
+    hall = _clean_hall(event)
 
-    # Quickbook exposes attributeIds and often extra descriptive fields. Feed both
-    # event and film metadata through the existing canonicalizers.
+    # Screening attributes belong to the event.  Film metadata contains genre,
+    # age rating and other words that must not become screening attributes.
     event_blob = ' '.join(_flatten_values(event))
-    film_blob = ' '.join(_flatten_values(film))
-    blob = f'{event_blob} {film_blob}'
-    attrs = canon_attributes(blob)
-
-    # Keep a readable raw version string. The exact SK payload is diagnosed in V8;
-    # canon_version() will extract SUB/DUB + language when those words are present.
-    version = ''
-    for obj in (event, film):
-        for key in ('version', 'language', 'languageVersion', 'presentationMethodAndLanguage',
-                    'eventLanguage', 'filmLanguage', 'subtitleLanguage', 'dubLanguage'):
-            if obj.get(key):
-                version += (' ' if version else '') + str(obj.get(key))
-    if not version and canon_version(blob):
-        version = blob
+    attrs = canon_attributes(event_blob)
+    version = _clean_version_from_quickbook(event, film)
 
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
@@ -475,6 +494,28 @@ def version_match(expected, actual):
     return not e or e == w
 
 
+def basic_unmatched(expected, web):
+    """Find only film/date/time differences, before attribute/version checks."""
+    used = set()
+    missing = []
+    for e in expected:
+        idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+        if idx is None:
+            missing.append(e)
+        else:
+            used.add(idx)
+    extra = [w for i, w in enumerate(web) if i not in used]
+    return missing, extra
+
+
+def compact_show(item):
+    return {
+        'date': item.get('date', ''), 'time': item.get('time', ''),
+        'film': item.get('film', ''), 'hall': item.get('hall', ''),
+        'attribute': item.get('attribute', ''), 'version': item.get('version', ''),
+    }
+
+
 @app.get('/')
 def home():
     return render_template('index.html')
@@ -554,9 +595,17 @@ def web_preview():
             by_day[x['date']] = by_day.get(x['date'], 0) + 1
         for x in exp:
             expected_by_day[x['date']] = expected_by_day.get(x['date'], 0) + 1
+        missing_basic, extra_basic = basic_unmatched(exp, web)
+        diagnostics.append(f'Film+dátum+čas: v Exceli navyše {len(missing_basic)}, na Cinema City navyše {len(extra_basic)}')
+        for item in missing_basic[:12]:
+            diagnostics.append(f"EXCEL NAVYŠE: {item['date']} {item['time']} | {item['film']} | {item.get('hall','')}")
+        for item in extra_basic[:12]:
+            diagnostics.append(f"WEB NAVYŠE: {item['date']} {item['time']} | {item['film']} | {item.get('hall','')}")
         return jsonify({
             'ok': True, 'web': web, 'count': len(web), 'by_day': by_day,
             'expected_by_day': expected_by_day,
+            'missing_basic': [compact_show(x) for x in missing_basic],
+            'extra_basic': [compact_show(x) for x in extra_basic],
             'diagnostics': diagnostics, 'urls': urls,
         })
     except Exception as exc:
