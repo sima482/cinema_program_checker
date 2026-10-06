@@ -592,12 +592,32 @@ def attributes_match(expected, actual):
     return not e or e.issubset(w)
 
 
+def _version_parts(value, excel=False):
+    canonical = excel_version(value) if excel else canon_version(value)
+    parts = canonical.split()
+    mode = next((x for x in parts if x in {"SUB", "DUB"}), "")
+    lang = next((x for x in parts if x in {"SK", "CZ", "EN", "HU", "DE"}), "")
+    return mode, lang
+
+
 def version_match(expected, actual):
-    e = excel_version(expected)
-    w = canon_version(actual)
-    # If Quickbook code could not be decoded safely, do not invent a mismatch.
-    # Repeated presentation codes are decoded by learn_quickbook_versions().
-    return not e or not w or e == w
+    """Compare only information that both sides actually provide.
+
+    Examples:
+      Excel SUB vs web Czech SUB -> OK (Excel did not specify language)
+      Excel Czech SUB vs web Slovak SUB -> mismatch
+      Excel Czech SUB vs web Slovak -> OK for SUB/DUB (web did not specify mode)
+    """
+    e_mode, e_lang = _version_parts(expected, excel=True)
+    w_mode, w_lang = _version_parts(actual, excel=False)
+
+    # Compare SUB/DUB only when both sides state it.
+    if e_mode and w_mode and e_mode != w_mode:
+        return False
+    # Compare language only when both sides state a language.
+    if e_lang and w_lang and e_lang != w_lang:
+        return False
+    return True
 
 
 def basic_unmatched(expected, web):
