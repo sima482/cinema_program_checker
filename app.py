@@ -5,6 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
+BUILD_VERSION = 'V17'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -593,28 +594,47 @@ def attributes_match(expected, actual):
 
 
 def _version_parts(value, excel=False):
-    canonical = excel_version(value) if excel else canon_version(value)
-    parts = canonical.split()
-    mode = next((x for x in parts if x in {"SUB", "DUB"}), "")
-    lang = next((x for x in parts if x in {"SK", "CZ", "EN", "HU", "DE"}), "")
+    """Extract only explicit SUB/DUB and language information.
+
+    Missing pieces stay empty. This matters because a bare `SUB` in Excel
+    means "subtitled, language unspecified", not "different from Slovak SUB".
+    """
+    n = norm(value)
+    tokens = set(n.split())
+    mode = ''
+    if {'sub', 'subtitle', 'subtitles'} & tokens or 'titulky' in n:
+        mode = 'SUB'
+    elif {'dub', 'dubbed', 'dubbing'} & tokens or 'dabing' in n:
+        mode = 'DUB'
+
+    lang = ''
+    lang_map = {
+        'SK': ('sk', 'svk', 'slovak', 'slovencina'),
+        'CZ': ('cz', 'cs', 'cze', 'ces', 'czech', 'cestina'),
+        'EN': ('en', 'eng', 'english', 'anglictina'),
+        'HU': ('hu', 'hun', 'hungarian', 'madarcina'),
+        'DE': ('de', 'ger', 'german', 'nemcina'),
+    }
+    for canonical, variants in lang_map.items():
+        if any(norm(v) in tokens for v in variants):
+            lang = canonical
+            break
     return mode, lang
 
 
 def version_match(expected, actual):
-    """Compare only information that both sides actually provide.
+    """A version error exists only when both sides explicitly contradict.
 
-    Examples:
-      Excel SUB vs web Czech SUB -> OK (Excel did not specify language)
-      Excel Czech SUB vs web Slovak SUB -> mismatch
-      Excel Czech SUB vs web Slovak -> OK for SUB/DUB (web did not specify mode)
+    SUB / Slovak SUB -> OK
+    SUB / Czech SUB -> OK
+    Czech SUB / Slovak SUB -> mismatch
+    SUB / Slovak -> OK (web has no explicit SUB/DUB)
+    Czech DUB / DUB CS -> OK
     """
     e_mode, e_lang = _version_parts(expected, excel=True)
     w_mode, w_lang = _version_parts(actual, excel=False)
-
-    # Compare SUB/DUB only when both sides state it.
     if e_mode and w_mode and e_mode != w_mode:
         return False
-    # Compare language only when both sides state a language.
     if e_lang and w_lang and e_lang != w_lang:
         return False
     return True
@@ -835,7 +855,7 @@ def check_day():
                 errors.append({'type': 'extra', 'web': compact_show(w)})
         errors = reconcile_time_errors(errors)
         return jsonify({'ok': True, 'day': day, 'expected': len(exp), 'web': len(web),
-                        'errors': errors, 'diagnostic': diagnostic, 'version_notes': notes, 'url': url})
+                        'errors': errors, 'diagnostic': diagnostic, 'version_notes': notes, 'url': url, 'build': BUILD_VERSION})
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 500
 
