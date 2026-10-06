@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: cinema-program-checker
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
