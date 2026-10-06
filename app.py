@@ -364,6 +364,12 @@ def _quickbook_event_to_web(event, film, requested_day):
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
         'version': version, 'hall': hall,
+        # Keep Cinema City's structured language/presentation metadata internally.
+        # It is used below to learn the meaning of SK Quickbook presentation codes
+        # from the whole week instead of guessing that the original film language
+        # (for example EN) is the subtitle/dubbing language.
+        '_presentation_code': str(event.get('presentationCode') or '').strip(),
+        '_languages': event.get('languages'),
     }
 
 
@@ -472,6 +478,71 @@ def scrape_day_safe(cinema, day, movie_titles):
 def scrape_week(cinema, start, movie_titles):
     return fetch_quickbook_week(cinema, start)
 
+def _language_signature(value):
+    """Stable signature of Quickbook's structured languages field."""
+    try:
+        import json
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    except Exception:
+        return str(value or '')
+
+
+def _version_key(item):
+    """Cinema City screening-language identity, without film/date/time."""
+    return (str(item.get('_presentation_code') or '').strip().lower(),
+            _language_signature(item.get('_languages')))
+
+
+def learn_quickbook_versions(expected, web):
+    """Decode SK Quickbook language codes from the week's matched screenings.
+
+    Quickbook exposes the original language in `languages`; treating that value as
+    the dubbing/subtitle language caused false EN errors. `presentationCode` is the
+    screening-version code. We learn its meaning from repeated, independently
+    matched film+date+time rows in the uploaded schedule. A single odd Excel row
+    cannot redefine a code: mappings are accepted only when the same value wins
+    clearly among all occurrences.
+    """
+    from collections import defaultdict, Counter
+    samples = defaultdict(list)
+    used = set()
+    for e in expected:
+        idx = next((i for i, w in enumerate(web) if i not in used and compatible(e, w)), None)
+        if idx is None:
+            continue
+        used.add(idx)
+        ev = excel_version(e.get('version', ''))
+        key = _version_key(web[idx])
+        if ev and (key[0] or key[1]):
+            samples[key].append(ev)
+
+    mapping = {}
+    notes = []
+    for key, values in samples.items():
+        counts = Counter(values)
+        winner, n = counts.most_common(1)[0]
+        total = len(values)
+        # Repeated codes must have a strong consensus. For a code occurring once,
+        # keep it unmapped so one Excel typo can never teach the checker a rule.
+        if total >= 2 and n / total >= 0.80:
+            mapping[key] = winner
+        if total >= 2:
+            code = key[0] or '(bez presentationCode)'
+            detail = ', '.join(f'{v}×{c}' for v, c in counts.most_common())
+            notes.append(f'Verzia {code}: {detail}' + (f' → {winner}' if key in mapping else ' → nejednoznačné'))
+
+    for w in web:
+        learned = mapping.get(_version_key(w))
+        if learned:
+            w['version'] = learned
+        else:
+            # Do not present original-language metadata (e.g. EN) as SUB/DUB.
+            # Unknown codes stay blank and are reported as "neviem overiť" rather
+            # than as a false mismatch.
+            w['version'] = ''
+    return notes
+
+
 def same_title(expected, web):
     candidates = [expected.get('film', ''), expected.get('original', '')]
     wn = norm(web.get('film', ''))
@@ -491,7 +562,9 @@ def attributes_match(expected, actual):
 def version_match(expected, actual):
     e = excel_version(expected)
     w = canon_version(actual)
-    return not e or e == w
+    # If Quickbook code could not be decoded safely, do not invent a mismatch.
+    # Repeated presentation codes are decoded by learn_quickbook_versions().
+    return not e or not w or e == w
 
 
 def basic_unmatched(expected, web):
@@ -566,7 +639,9 @@ def web_preview_day():
         titles = known_titles_from_expected(exp)
         day = (start + timedelta(days=day_index)).isoformat()
         web, url, diagnostic = scrape_day_safe(cinema, day, titles)
-        expected_count = sum(1 for x in exp if x['date'] == day)
+        day_exp = [x for x in exp if x['date'] == day]
+        learn_quickbook_versions(day_exp, web)
+        expected_count = len(day_exp)
         return jsonify({
             'ok': True, 'day': day, 'web': web, 'count': len(web),
             'expected_count': expected_count, 'diagnostic': diagnostic, 'url': url,
@@ -590,6 +665,8 @@ def web_preview():
         exp = expected_from_excel(f.read(), cinema, start)
         titles = known_titles_from_expected(exp)
         web, urls, diagnostics = scrape_week(cinema, start, titles)
+        version_notes = learn_quickbook_versions(exp, web)
+        diagnostics.extend(version_notes[:20])
         by_day, expected_by_day = {}, {}
         for x in web:
             by_day[x['date']] = by_day.get(x['date'], 0) + 1
@@ -628,6 +705,8 @@ def check():
         exp = expected_from_excel(f.read(), cinema, start)
         titles = known_titles_from_expected(exp)
         web, urls, diagnostics = scrape_week(cinema, start, titles)
+        version_notes = learn_quickbook_versions(exp, web)
+        diagnostics.extend(version_notes[:20])
         days_with_data = {x['date'] for x in web}
 
         # Never produce a giant false-error report when Cinema City failed to load.
