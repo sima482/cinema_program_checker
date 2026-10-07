@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V28'
+BUILD_VERSION = 'V29'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -364,25 +364,18 @@ def _language_code(text):
 
 
 def _quickbook_language_data(event, film):
-    """Return (original language, localisation mode, localisation language).
+    """Return (spoken/original language, localisation mode, localisation language).
 
-    Cinema City Quickbook encodes these independently in attributeIds, e.g.
-    original-lang-en, subbed + first-subbed-lang-sk, dubbed + first-dubbed-lang-cs.
-    The original language is NEVER used as the subtitle/dubbing language.
+    Cinema City displays screenings as e.g. `ČEŠTINA` or
+    `ANGLIČTINA (TITULKY: SLOVENČINA)`.  The language outside brackets is
+    the screening/original language; the bracket supplies SUB/DUB target.
+    Quickbook may expose that first language through original-lang-* OR its
+    structured `languages`/language fields, so do not default a missing value
+    to Slovak.
     """
     attr_ids = [norm(x).replace(' ', '-') for x in (event.get('attributeIds') or [])]
-    # Film attributes can carry original language when the event does not.
     film_attr_ids = [norm(x).replace(' ', '-') for x in (film.get('attributeIds') or [])]
     all_ids = attr_ids + film_attr_ids
-
-    original = ''
-    for aid in all_ids:
-        for prefix in ('original-lang-', 'original-language-'):
-            if aid.startswith(prefix):
-                original = _language_code(aid[len(prefix):]) or aid[len(prefix):].upper()
-                break
-        if original:
-            break
 
     mode = 'SUB' if 'subbed' in attr_ids else ('DUB' if 'dubbed' in attr_ids else '')
     target = ''
@@ -396,6 +389,38 @@ def _quickbook_language_data(event, film):
                     break
             if target:
                 break
+
+    original = ''
+    for aid in all_ids:
+        for prefix in ('original-lang-', 'original-language-'):
+            if aid.startswith(prefix):
+                original = _language_code(aid[len(prefix):]) or aid[len(prefix):].upper()
+                break
+        if original:
+            break
+
+    # Some SK Quickbook events (notably screenings shown simply as `ČEŠTINA`)
+    # omit original-lang-* but expose the spoken language in structured fields.
+    # Collect codes in source order. For SUB/DUB, exclude the known target; the
+    # remaining language is the language outside Cinema City's brackets.
+    if not original:
+        candidates = []
+        for obj, keys in ((event, ('languages','eventLanguage','filmLanguage','language','presentationMethodAndLanguage')),
+                          (film, ('languages','originalLanguage','filmLanguage','language'))):
+            for key in keys:
+                value = obj.get(key)
+                if value in (None, '', [], {}):
+                    continue
+                for raw in _flatten_values(value):
+                    code = _language_code(raw)
+                    if code and code not in candidates:
+                        candidates.append(code)
+        if mode and target:
+            non_target = [c for c in candidates if c != target]
+            original = non_target[0] if non_target else ''
+        elif candidates:
+            original = candidates[0]
+
     return original, mode, target
 
 
@@ -437,11 +462,9 @@ def _quickbook_event_to_web(event, film, requested_day):
     event_blob = ' '.join(_flatten_values(event))
     attrs = canon_attributes(event_blob)
     original_language, mode, target = _quickbook_language_data(event, film)
-    # Cinema City SK: when no dubbing/subtitle localisation is present,
-    # the screening is the Slovak/original Slovak version. Show that explicitly
-    # instead of an empty value. This is display data; comparison still uses
-    # structured mode/target fields and therefore does not invent SUB/DUB.
-    version = ' '.join(x for x in (mode, target) if x) if mode else 'Slovak'
+    # If there is no bracket/localisation, show the actual language Cinema City
+    # gives for the screening (e.g. CZECH), never an invented Slovak default.
+    version = ' '.join(x for x in (target, mode) if x) if mode else original_language
 
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
