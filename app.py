@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V23'
+BUILD_VERSION = 'V24'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -340,76 +340,72 @@ def _clean_version_from_quickbook(event, film):
     return canon_version(event_text)
 
 
-LANG_MAP = {
-    'SK': ('sk', 'svk', 'slovak', 'slovencina', 'slovencina'),
-    'CZ': ('cz', 'cs', 'cze', 'ces', 'czech', 'cestina'),
-    'EN': ('en', 'eng', 'english', 'anglictina'),
-    'HR': ('hr', 'hrv', 'croatian', 'chorvatcina'),
-    'HU': ('hu', 'hun', 'hungarian', 'madarcina'),
-    'DE': ('de', 'ger', 'deu', 'german', 'nemcina'),
-    'FR': ('fr', 'fra', 'french', 'francuzstina'),
-    'IT': ('it', 'ita', 'italian', 'taliancina'),
-    'ES': ('es', 'spa', 'spanish', 'spanielcina'),
-    'PL': ('pl', 'pol', 'polish', 'polstina'),
-}
-
-
-def canon_language(value):
-    """Canonical language code for Excel or Cinema City text."""
-    n = norm(value)
-    if not n:
-        return ''
+def _language_code(text):
+    """Normalize a language label/code to SK/CZ/EN/HU/DE/HR when known."""
+    n = norm(text)
     tokens = set(n.split())
-    for canonical, variants in LANG_MAP.items():
+    mapping = {
+        'SK': ('sk','svk','slovak','slovencina'),
+        'CZ': ('cz','cs','cze','ces','czech','cestina'),
+        'EN': ('en','eng','english','anglictina'),
+        'HU': ('hu','hun','hungarian','madarcina'),
+        'DE': ('de','ger','deu','german','nemcina'),
+        'HR': ('hr','hrv','croatian','chorvatcina'),
+    }
+    for code, variants in mapping.items():
         if any(norm(v) in tokens for v in variants):
-            return canonical
+            return code
     return ''
 
 
-def _original_language_from_quickbook(event, film):
-    """Read original spoken language, never subtitle/dub target language."""
+def _quickbook_language_data(event, film):
+    """Return (original language, localisation mode, localisation language).
+
+    Cinema City Quickbook encodes these independently in attributeIds, e.g.
+    original-lang-en, subbed + first-subbed-lang-sk, dubbed + first-dubbed-lang-cs.
+    The original language is NEVER used as the subtitle/dubbing language.
+    """
     attr_ids = [norm(x).replace(' ', '-') for x in (event.get('attributeIds') or [])]
-    # Cinema City Quickbook commonly exposes original language as original-lang-xx.
-    for aid in attr_ids:
-        for prefix in ('original-lang-', 'original-language-', 'orig-lang-'):
+    # Film attributes can carry original language when the event does not.
+    film_attr_ids = [norm(x).replace(' ', '-') for x in (film.get('attributeIds') or [])]
+    all_ids = attr_ids + film_attr_ids
+
+    original = ''
+    for aid in all_ids:
+        for prefix in ('original-lang-', 'original-language-'):
             if aid.startswith(prefix):
-                return canon_language(aid[len(prefix):]) or aid[len(prefix):].upper()
+                original = _language_code(aid[len(prefix):]) or aid[len(prefix):].upper()
+                break
+        if original:
+            break
 
-    # Prefer explicitly named original-language fields.
-    for obj in (event, film):
-        for key in ('originalLanguage', 'originalFilmLanguage', 'spokenLanguage'):
-            value = obj.get(key)
-            if value not in (None, '', [], {}):
-                c = canon_language(' '.join(_flatten_values(value)))
-                if c:
-                    return c
+    mode = 'SUB' if 'subbed' in attr_ids else ('DUB' if 'dubbed' in attr_ids else '')
+    target = ''
+    if mode:
+        prefixes = ('first-subbed-lang-', 'subbed-lang-') if mode == 'SUB' else ('first-dubbed-lang-', 'dubbed-lang-')
+        for aid in attr_ids:
+            for prefix in prefixes:
+                if aid.startswith(prefix):
+                    raw = aid[len(prefix):]
+                    target = _language_code(raw) or raw.upper()
+                    break
+            if target:
+                break
+    return original, mode, target
 
-    # Structured `languages` can contain labels/codes. Only accept an entry that
-    # explicitly identifies itself as original; do not mistake dub/sub language for it.
-    langs = event.get('languages')
-    if isinstance(langs, (list, tuple)):
-        for item in langs:
-            txt = ' '.join(_flatten_values(item))
-            ni = norm(txt)
-            if 'original' in ni or 'povod' in ni:
-                c = canon_language(txt)
-                if c:
-                    return c
-    elif isinstance(langs, dict):
-        for key, value in langs.items():
-            if 'original' in norm(key) or 'povod' in norm(key):
-                c = canon_language(' '.join(_flatten_values(value)))
-                if c:
-                    return c
-    return ''
+
+def localization_key(text, excel=False):
+    """Canonical G-column/localisation identity. Bare Excel SUB/DUB means Slovak."""
+    mode, lang = _version_parts(text, excel=excel)
+    return mode, lang
 
 
 def original_language_match(expected, actual):
-    """Missing web detail is not a false error; explicit different languages are."""
-    e = canon_language(expected)
-    w = canon_language(actual)
-    return not (e and w and e != w)
-
+    e = _language_code(expected)
+    w = _language_code(actual)
+    if not e or not w:
+        return True  # do not invent a mismatch when Quickbook lacks the datum
+    return e == w
 
 def _quickbook_event_to_web(event, film, requested_day):
     raw_dt = str(event.get('eventDateTime') or event.get('dateTime') or event.get('startTime') or '')
@@ -435,26 +431,8 @@ def _quickbook_event_to_web(event, film, requested_day):
     # age rating and other words that must not become screening attributes.
     event_blob = ' '.join(_flatten_values(event))
     attrs = canon_attributes(event_blob)
-    version = _clean_version_from_quickbook(event, film)
-    original_language = _original_language_from_quickbook(event, film)
-    # Quickbook exposes localisation explicitly in attributeIds, e.g.
-    # `subbed` + `first-subbed-lang-sk` or `dubbed` + `first-dubbed-lang-sk`.
-    # This is independent Cinema City data, so unlike the old presentationCode
-    # approach it does not learn the answer from the uploaded Excel.
-    attr_ids = [norm(x).replace(' ', '-') for x in (event.get('attributeIds') or [])]
-    mode = 'SUB' if 'subbed' in attr_ids else ('DUB' if 'dubbed' in attr_ids else '')
-    target = ''
-    prefixes = ('first-subbed-lang-', 'subbed-lang-') if mode == 'SUB' else ('first-dubbed-lang-', 'dubbed-lang-')
-    if mode:
-        for aid in attr_ids:
-            for prefix in prefixes:
-                if aid.startswith(prefix):
-                    target = aid[len(prefix):].upper()
-                    break
-            if target:
-                break
-    if mode:
-        version = ' '.join(x for x in (mode, target) if x)
+    original_language, mode, target = _quickbook_language_data(event, film)
+    version = ' '.join(x for x in (mode, target) if x)
 
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
@@ -699,23 +677,18 @@ def _version_parts(value, excel=False):
 
 
 def version_match(expected, actual):
-    """Return False ONLY for an explicit contradiction.
+    """Compare Excel G with Cinema City localisation exactly.
 
-    Missing detail is never a mismatch. Examples:
-      SUB vs Slovak SUB -> True
-      SUB vs Czech SUB -> False
-      SUB vs Slovak -> True
-      Czech SUB vs Slovak SUB -> False
-      Czech DUB vs DUB CS -> True
+    Excel bare SUB/DUB means Slovak. A web screening with no SUB/DUB is not the
+    same as Excel SUB/DUB; original language is checked separately.
     """
     e_mode, e_lang = _version_parts(expected, excel=True)
     w_mode, w_lang = _version_parts(actual, excel=False)
-
-    # Compare SUB/DUB only when BOTH sources explicitly state the mode.
-    if e_mode and w_mode and e_mode != w_mode:
+    if not e_mode and not w_mode:
+        return True
+    if e_mode != w_mode:
         return False
-    # Compare language only when BOTH sources explicitly state the language.
-    if e_lang and w_lang and e_lang != w_lang:
+    if e_mode and e_lang != w_lang:
         return False
     return True
 
@@ -725,30 +698,9 @@ def explicit_version_conflict(expected, actual):
     return not version_match(expected, actual)
 
 def filter_noncontradictory_version_errors(errors):
-    """Final safety gate for language/version errors.
+    """V24: version_match is authoritative; do not weaken its result later."""
+    return errors
 
-    A mismatch is kept ONLY when both sides explicitly provide the same
-    category of information and those explicit values contradict each other.
-    This deliberately treats bare SUB/DUB and language-only values as partial.
-    """
-    out = []
-    for err in errors:
-        if err.get('type') != 'version':
-            out.append(err)
-            continue
-        e = err.get('expected') or {}
-        w = err.get('web') or {}
-        ev = str(e.get('version', '') or '').strip()
-        wv = str(w.get('version', '') or '').strip()
-        em, el = _version_parts(ev, excel=True)
-        wm, wl = _version_parts(wv, excel=False)
-
-        # Keep only a provable contradiction.
-        mode_conflict = bool(em and wm and em != wm)
-        language_conflict = bool(el and wl and el != wl)
-        if mode_conflict or language_conflict:
-            out.append(err)
-    return out
 
 def basic_unmatched(expected, web):
     """Find only film/date/time differences, before attribute/version checks."""
@@ -818,8 +770,8 @@ def compact_show(item):
     return {
         'date': item.get('date', ''), 'time': item.get('time', ''),
         'film': item.get('film', ''), 'hall': item.get('hall', ''),
-        'attribute': item.get('attribute', ''), 'version': item.get('version', ''),
-        'original_language': item.get('original_language', ''),
+        'attribute': item.get('attribute', ''), 'original_language': item.get('original_language', ''),
+        'version': item.get('version', ''),
     }
 
 
@@ -983,7 +935,7 @@ def check_day():
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
             if not original_language_match(e.get('original_language', ''), w.get('original_language', '')):
-                errors.append({'type': 'language', 'expected': compact_show(e), 'web': compact_show(w)})
+                errors.append({'type': 'original_language', 'expected': compact_show(e), 'web': compact_show(w)})
             if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
                 errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
         for i, w in enumerate(web):
@@ -1046,7 +998,7 @@ def check():
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': e, 'web': w})
             if not original_language_match(e.get('original_language', ''), w.get('original_language', '')):
-                errors.append({'type': 'language', 'expected': e, 'web': w})
+                errors.append({'type': 'original_language', 'expected': e, 'web': w})
             if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
                 errors.append({'type': 'version', 'expected': e, 'web': w})
 
