@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V26'
+BUILD_VERSION = 'V27'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -967,7 +967,7 @@ def check_day():
                 errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
             if not structured_original_language_match(e, w):
                 errors.append({'type': 'original_language', 'expected': compact_show(e), 'web': compact_show(w)})
-            if not structured_localization_match(e, w):
+            if not version_match(e.get('version',''), w.get('version','')):
                 errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
         for i, w in enumerate(web):
             if i not in used:
@@ -1030,7 +1030,7 @@ def check():
                 errors.append({'type': 'attribute', 'expected': e, 'web': w})
             if not structured_original_language_match(e, w):
                 errors.append({'type': 'original_language', 'expected': e, 'web': w})
-            if not structured_localization_match(e, w):
+            if not version_match(e.get('version',''), w.get('version','')):
                 errors.append({'type': 'version', 'expected': e, 'web': w})
 
         for i, w in enumerate(web):

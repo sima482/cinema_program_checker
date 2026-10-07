@@ -9,7 +9,7 @@
 <body>
 <main>
   <h1>🎬 Kontrola filmového programu</h1>
-  <p class="lead">Excel ↔ Cinema City • celý programový týždeň štvrtok → streda</p>
+  <p class="lead">Excel ↔ Cinema City • programový týždeň štvrtok → streda</p>
   <section>
     <div class="grid">
       <label>1. Excel
@@ -23,15 +23,27 @@
       </label>
     </div>
     <div id="range" class="range"></div>
+    <div id="day-selector" style="margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
+      <div style="font-weight:800;margin-bottom:10px">4. Dni na kontrolu</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="0" checked> Štvrtok</label>
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="1" checked> Piatok</label>
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="2" checked> Sobota</label>
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="3" checked> Nedeľa</label>
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="4" checked> Pondelok</label>
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="5" checked> Utorok</label>
+        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="6" checked> Streda</label>
+      </div>
+    </div>
     <div class="actions">
       <button id="preview" class="secondary">Ukázať, čo čítam z Excelu</button>
       <button id="webpreview" class="secondary">Ukázať, čo čítam z Cinema City</button>
-      <button id="go">Skontrolovať celý týždeň</button>
+      <button id="go">Skontrolovať vybrané dni</button>
     </div>
   </section>
-  <section id="status" class="status">Nahraj Excel, vyber kino a štvrtok programového týždňa.</section>
+  <section id="status" class="status">Nahraj Excel, vyber kino, štvrtok a dni na kontrolu.</section>
   <section id="results" class="results"></section>
 </main>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=27"></script>
 </body>
 </html>
