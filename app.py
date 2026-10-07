@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V20'
+BUILD_VERSION = 'V21'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -649,7 +649,12 @@ def explicit_version_conflict(expected, actual):
     return not version_match(expected, actual)
 
 def filter_noncontradictory_version_errors(errors):
-    """Never let an incomplete version create a false error."""
+    """Final safety gate for language/version errors.
+
+    A mismatch is kept ONLY when both sides explicitly provide the same
+    category of information and those explicit values contradict each other.
+    This deliberately treats bare SUB/DUB and language-only values as partial.
+    """
     out = []
     for err in errors:
         if err.get('type') != 'version':
@@ -657,7 +662,15 @@ def filter_noncontradictory_version_errors(errors):
             continue
         e = err.get('expected') or {}
         w = err.get('web') or {}
-        if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
+        ev = str(e.get('version', '') or '').strip()
+        wv = str(w.get('version', '') or '').strip()
+        em, el = _version_parts(ev, excel=True)
+        wm, wl = _version_parts(wv, excel=False)
+
+        # Keep only a provable contradiction.
+        mode_conflict = bool(em and wm and em != wm)
+        language_conflict = bool(el and wl and el != wl)
+        if mode_conflict or language_conflict:
             out.append(err)
     return out
 
