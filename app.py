@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V29'
+BUILD_VERSION = 'V30'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -866,6 +866,37 @@ def health():
     return {'ok': True}
 
 
+def _selection_key(item):
+    """Stable film-version key used only by the V30 UI filter."""
+    title = norm(item.get('film', ''))
+    original = item.get('original_language_code') or _language_code(item.get('original_language', '')) or ''
+    mode = item.get('localization_mode') or _version_parts(item.get('version', ''), excel=True)[0] or ''
+    lang = item.get('localization_language') or _version_parts(item.get('version', ''), excel=True)[1] or ''
+    attrs = '|'.join(sorted(canon_attributes(item.get('attribute', ''))))
+    return '::'.join((title, original, mode, lang, attrs))
+
+
+def _selected_keys_from_request():
+    raw = request.form.get('selected_variants', '').strip()
+    if not raw:
+        return None
+    return {x for x in raw.split('|||') if x}
+
+
+def _reserve_unselected_web(unselected_expected, web):
+    """Reserve web rows belonging to film versions the user did not select.
+
+    This prevents another SUB/DUB/format of the same title from appearing as an
+    'extra' error while a single variant is being checked.
+    """
+    reserved = set()
+    for e in unselected_expected:
+        idx = best_match_index(e, web, reserved)
+        if idx is not None:
+            reserved.add(idx)
+    return reserved
+
+
 @app.post('/api/preview')
 def preview():
     try:
@@ -877,6 +908,8 @@ def preview():
         if start.weekday() != 3:
             raise ValueError('Začiatok programového týždňa musí byť štvrtok.')
         exp = expected_from_excel(f.read(), cinema, start)
+        for x in exp:
+            x['selection_key'] = _selection_key(x)
         return jsonify({'ok': True, 'expected': exp, 'count': len(exp)})
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
@@ -974,13 +1007,17 @@ def check_day():
             raise ValueError('Neplatný deň kontroly.')
         exp_all = expected_from_excel(f.read(), cinema, start)
         day = (start + timedelta(days=day_index)).isoformat()
-        exp = [x for x in exp_all if x['date'] == day]
+        day_all = [x for x in exp_all if x['date'] == day]
+        selected_keys = _selected_keys_from_request()
+        exp = day_all if selected_keys is None else [x for x in day_all if _selection_key(x) in selected_keys]
+        unselected = [] if selected_keys is None else [x for x in day_all if _selection_key(x) not in selected_keys]
         titles = known_titles_from_expected(exp_all)
         web, url, diagnostic = scrape_day_safe(cinema, day, titles)
         notes = learn_quickbook_versions(exp, web)
         if not web and exp:
             return jsonify({'ok': False, 'error': f'Cinema City nevrátilo dáta pre {day}.', 'diagnostic': diagnostic}), 502
-        errors, used = [], set()
+        errors = []
+        used = _reserve_unselected_web(unselected, web)
         for e in exp:
             idx = best_match_index(e, web, used)
             if idx is None:
@@ -996,8 +1033,9 @@ def check_day():
                 errors.append({'type': 'original_language', 'expected': compact_show(e), 'web': compact_show(w)})
             if not version_match(e.get('version',''), w.get('version','')):
                 errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
+        selected_title_norms = {norm(x.get('film','')) for x in exp}
         for i, w in enumerate(web):
-            if i not in used:
+            if i not in used and (selected_keys is None or norm(w.get('film','')) in selected_title_norms):
                 errors.append({'type': 'extra', 'web': compact_show(w)})
         errors = reconcile_time_errors(errors)
         errors = filter_noncontradictory_version_errors(errors)

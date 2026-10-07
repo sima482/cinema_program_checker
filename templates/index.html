@@ -9,41 +9,38 @@
 <body>
 <main>
   <h1>🎬 Kontrola filmového programu</h1>
-  <p class="lead">Excel ↔ Cinema City • programový týždeň štvrtok → streda</p>
+  <p class="lead">Excel ↔ Cinema City</p>
   <section>
     <div class="grid">
-      <label>1. Excel
-        <input id="excel" type="file" accept=".xlsx">
-      </label>
+      <label>1. Excel <input id="excel" type="file" accept=".xlsx"></label>
       <label>2. Kino
         <select id="cinema"><option>Eurovea</option><option>Aupark</option><option>Polus</option></select>
       </label>
-      <label>3. Začiatok týždňa
-        <input id="start" type="date" value="2026-10-08">
-      </label>
+      <label>3. Kontrola OD <input id="start" type="date" value="2026-10-08"></label>
+      <label>Kontrola DO <input id="end" type="date" value="2026-10-14"></label>
     </div>
     <div id="range" class="range"></div>
     <div id="day-selector" style="margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
       <div style="font-weight:800;margin-bottom:10px">4. Dni na kontrolu</div>
-      <div style="display:flex;gap:14px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="0" checked> Štvrtok</label>
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="1" checked> Piatok</label>
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="2" checked> Sobota</label>
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="3" checked> Nedeľa</label>
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="4" checked> Pondelok</label>
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="5" checked> Utorok</label>
-        <label style="display:flex;align-items:center;gap:6px"><input class="day-check" type="checkbox" value="6" checked> Streda</label>
-      </div>
+      <div id="day-checks" style="display:flex;gap:14px;flex-wrap:wrap"></div>
+      <div class="small" style="margin-top:7px;opacity:.8">Označ iba dni, ktoré chceš kontrolovať.</div>
+    </div>
+    <div style="margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
+      <div style="font-weight:800;margin-bottom:10px">5. Filmy na kontrolu</div>
+      <button id="loadfilms" type="button" class="secondary">Načítať filmy z Excelu</button>
+      <div id="filmtools" style="display:none;margin-top:10px"><button id="allfilms" type="button" class="secondary">Vybrať všetky</button> <button id="nofilms" type="button" class="secondary">Zrušiť všetky</button></div>
+      <div id="film-list" style="display:flex;gap:10px 18px;flex-wrap:wrap;margin-top:12px"></div>
+      <div class="small" style="margin-top:7px;opacity:.8">Rôzne verzie (SUB/DUB, jazyk, 3D, VIP, 4DX…) sú samostatné položky.</div>
     </div>
     <div class="actions">
       <button id="preview" class="secondary">Ukázať, čo čítam z Excelu</button>
       <button id="webpreview" class="secondary">Ukázať, čo čítam z Cinema City</button>
-      <button id="go">Skontrolovať vybrané dni</button>
+      <button id="go">Skontrolovať vybrané dni a filmy</button>
     </div>
   </section>
-  <section id="status" class="status">Nahraj Excel, vyber kino, štvrtok a dni na kontrolu.</section>
+  <section id="status" class="status">Nahraj Excel, vyber kino, obdobie, dni a filmy na kontrolu.</section>
   <section id="results" class="results"></section>
 </main>
-<script src="/static/app.js?v=29"></script>
+<script src="/static/app.js?v=30"></script>
 </body>
 </html>
