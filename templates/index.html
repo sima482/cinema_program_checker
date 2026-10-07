@@ -5,6 +5,22 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Kontrola filmového programu</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/film-picker-v33.css?v=33">
+<style>
+#film-panel{width:min(760px,calc(100% - 32px));box-sizing:border-box;max-width:calc(100% - 32px)}
+#filmtools{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#filmtools button{padding:10px 13px;font-size:14px}
+#film-count{margin-left:auto;font-size:13px;color:#bcd0dd}
+#film-list .film-option{display:flex;align-items:center;gap:12px;min-height:43px;box-sizing:border-box;padding:8px 12px;border:1px solid #275066;border-radius:11px;cursor:pointer;white-space:nowrap;overflow:hidden;font-size:14px;font-weight:600;transition:background .12s,border-color .12s}
+#film-list .film-option:hover{background:#173e54}
+#film-list .film-option:has(.film-check:focus-visible){outline:2px solid #78b8ff;outline-offset:1px}
+#film-list .film-check{position:absolute;opacity:0;width:1px;height:1px}
+#film-list .film-mark{display:inline-flex;flex:none;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid #5d839b;border-radius:50%;font-size:16px;color:transparent}
+#film-list .film-check:checked + .film-mark{background:#2186ef;color:white;border-color:#2186ef}
+#film-list .film-option:has(.film-check:checked){border-color:#2875b6;background:#10364f}
+#film-list .film-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+@media(max-width:600px){#film-panel{width:calc(100% - 32px)}#film-list .film-option{font-size:12px}#film-count{width:100%;margin-left:0}}
+</style>
 </head>
 <body>
 <main>
@@ -29,10 +45,10 @@
       <div style="font-weight:800;margin-bottom:10px">5. Filmy na kontrolu</div>
       <button id="loadfilms" type="button" class="secondary">Načítať filmy z Excelu</button>
       <button id="film-toggle" type="button" class="secondary" aria-expanded="false" style="display:none;margin-top:10px;width:100%;text-align:left;justify-content:space-between">🎬 Filmy na kontrolu: Všetky filmy <span>▼</span></button>
-      <div id="film-panel" style="display:none;position:absolute;z-index:50;left:16px;right:16px;top:100%;margin-top:6px;padding:12px 14px;background:#0d2c3b;border:1px solid rgba(255,255,255,.22);border-radius:10px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
+      <div id="film-panel" style="display:none">
         <input id="film-search" type="search" placeholder="Hľadať film…" autocomplete="off" style="width:100%;box-sizing:border-box;margin-bottom:10px">
-        <div id="filmtools" style="display:none;margin-bottom:10px"><button id="allfilms" type="button" class="secondary">Vybrať všetky</button> <button id="nofilms" type="button" class="secondary">Zrušiť všetky</button></div>
-        <div id="film-list" style="display:flex;flex-direction:column;gap:4px;max-height:330px;overflow-y:auto;padding-right:4px"></div>
+        <div id="filmtools" style="display:none;margin-bottom:10px"><button id="allfilms" type="button" class="secondary">✓ Vybrať všetky</button> <button id="nofilms" type="button" class="secondary">× Zrušiť všetky</button><span id="film-count"></span></div>
+        <div id="film-list"></div>
       </div>
       <div class="small" style="margin-top:7px;opacity:.8">Rôzne verzie (SUB/DUB, jazyk, 3D, VIP, 4DX…) sú samostatné položky.</div>
     </div>
@@ -45,6 +61,6 @@
   <section id="status" class="status">Nahraj Excel, vyber kino, obdobie, dni a filmy na kontrolu.</section>
   <section id="results" class="results"></section>
 </main>
-<script src="/static/app.js?v=32"></script>
+<script src="/static/app.js?v=33"></script>
 </body>
 </html>
