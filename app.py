@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V25'
+BUILD_VERSION = 'V26'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -119,6 +119,9 @@ def expected_from_excel(data, cinema, start):
         attr = str(row[4] or '').strip()
         original_language = str(row[5] or '').strip()
         subdub = str(row[6] or '').strip()
+        # Canonical structured values used by the comparison.
+        excel_original_code = _language_code(original_language)
+        excel_loc_mode, excel_loc_lang = _version_parts(subdub, excel=True)
 
         # L onward are time buckets. Each populated cell may contain an actual
         # showtime plus an optional day rule such as `only Su Sa` / `w/o Su Sa`.
