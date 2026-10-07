@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Kontrola filmového programu</title>
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="/static/film-picker-v33.css?v=34">
+  <link rel="stylesheet" href="/static/film-picker-v33.css?v=35">
 <style>
 #film-panel{width:min(760px,calc(100% - 32px));box-sizing:border-box;max-width:calc(100% - 32px)}
 #filmtools{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
@@ -19,6 +19,18 @@
 #film-list .film-check:checked + .film-mark{background:#2186ef;color:white;border-color:#2186ef}
 #film-list .film-option:has(.film-check:checked){border-color:#2875b6;background:#10364f}
 #film-list .film-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+.picker-section{position:relative;margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px}
+.picker-toggle{display:flex;width:100%;text-align:left;justify-content:space-between;align-items:center;margin-top:8px}
+.picker-panel{position:absolute;z-index:60;top:100%;left:16px;width:min(620px,calc(100% - 32px));box-sizing:border-box;margin-top:6px;padding:14px;background:#0b2838;border:1px solid #28566d;border-radius:16px;box-shadow:0 18px 40px rgba(0,0,0,.5)}
+.picker-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.picker-count{margin-left:auto;font-size:13px;color:#bcd0dd}
+.option-list{display:flex;flex-direction:column;gap:5px;max-height:330px;overflow-y:auto;padding:4px 5px 4px 0}
+.pick-option{display:flex;align-items:center;gap:12px;min-height:41px;padding:7px 12px;box-sizing:border-box;cursor:pointer;border:1px solid #234b60;border-radius:11px;background:#092333;color:#f3f8fb;font-weight:600;transition:background .12s,border-color .12s}
+.pick-option:hover{background:#133a51}.pick-option:has(.pick-check:checked){border-color:#2875b5;background:#10334c}.pick-option:focus-within{outline:2px solid #5aafff;outline-offset:1px}
+.pick-check{position:absolute;width:1px;height:1px;opacity:0}.pick-mark{display:inline-flex;align-items:center;justify-content:center;flex:0 0 25px;height:25px;border-radius:50%;border:1px solid #567080;background:#153647;color:transparent;font-size:17px;font-weight:900}.pick-check:checked+.pick-mark{color:#fff;border-color:#319aff;background:#258df4}.pick-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-size:15px}
+.err.type-attribute>b{color:#ffd54a}.err.type-version>b,.err.type-original_language>b{color:#55aaff}.err.type-time>b{color:#ff9f43}.err.type-title>b{color:#c77dff}.err.type-hall>b{color:#44d7d0}.err.type-missing>b,.err.type-extra>b{color:#ff6677}
+.summary-chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.summary-chip{padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.06);font-size:13px;font-weight:800}.c-attribute{color:#ffd54a}.c-version{color:#55aaff}.c-time{color:#ff9f43}.c-title{color:#c77dff}.c-hall{color:#44d7d0}.c-other{color:#ff6677}
 @media(max-width:600px){
   #film-panel{width:calc(100% - 32px)}
   #film-list .film-option{font-size:12px}
@@ -40,13 +52,26 @@
       <label>Kontrola DO <input id="end" type="date" value="2026-10-14"></label>
     </div>
     <div id="range" class="range"></div>
-    <div id="day-selector" style="margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
+    <div id="day-section" class="picker-section">
       <div style="font-weight:800;margin-bottom:10px">4. Dni na kontrolu</div>
-      <div id="day-checks" style="display:flex;gap:14px;flex-wrap:wrap"></div>
-      <div class="small" style="margin-top:7px;opacity:.8">Označ iba dni, ktoré chceš kontrolovať.</div>
+      <button id="day-toggle" type="button" class="secondary picker-toggle" aria-expanded="false">📅 Dni na kontrolu <span>▼</span></button>
+      <div id="day-panel" class="picker-panel" style="display:none">
+        <div class="picker-tools"><button id="alldays" type="button" class="secondary">✓ Vybrať všetky</button><button id="nodays" type="button" class="secondary">× Zrušiť všetky</button><span id="day-count" class="picker-count"></span></div>
+        <div id="day-checks" class="option-list"></div>
+      </div>
+      <div class="small" style="margin-top:7px;opacity:.8">Vyber dni v rámci obdobia OD–DO.</div>
     </div>
-    <div id="film-section" style="position:relative;margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
-      <div style="font-weight:800;margin-bottom:10px">5. Filmy na kontrolu</div>
+    <div id="hall-section" class="picker-section">
+      <div style="font-weight:800;margin-bottom:10px">5. Sály na kontrolu</div>
+      <button id="hall-toggle" type="button" class="secondary picker-toggle" aria-expanded="false" style="display:none">🎦 Sály na kontrolu <span>▼</span></button>
+      <div id="hall-panel" class="picker-panel" style="display:none">
+        <div class="picker-tools"><button id="allhalls" type="button" class="secondary">✓ Vybrať všetky</button><button id="nohalls" type="button" class="secondary">× Zrušiť všetky</button><span id="hall-count" class="picker-count"></span></div>
+        <div id="hall-list" class="option-list"></div>
+      </div>
+      <div class="small" style="margin-top:7px;opacity:.8">Sály sa načítajú spolu s filmami z Excelu.</div>
+    </div>
+    <div id="film-section" class="picker-section">
+      <div style="font-weight:800;margin-bottom:10px">6. Filmy na kontrolu</div>
       <button id="loadfilms" type="button" class="secondary">Načítať filmy z Excelu</button>
       <button id="film-toggle" type="button" class="secondary" aria-expanded="false" style="display:none;margin-top:10px;width:100%;text-align:left;justify-content:space-between">🎬 Filmy na kontrolu: Všetky filmy <span>▼</span></button>
       <div id="film-panel" style="display:none">
@@ -59,12 +84,12 @@
     <div class="actions">
       <button id="preview" class="secondary">Ukázať, čo čítam z Excelu</button>
       <button id="webpreview" class="secondary">Ukázať, čo čítam z Cinema City</button>
-      <button id="go">Skontrolovať vybrané dni a filmy</button>
+      <button id="go">Skontrolovať vybrané dni, sály a filmy</button>
     </div>
   </section>
-  <section id="status" class="status">Nahraj Excel, vyber kino, obdobie, dni a filmy na kontrolu.</section>
+  <section id="status" class="status">Nahraj Excel, vyber kino, obdobie, dni, sály a filmy na kontrolu.</section>
   <section id="results" class="results"></section>
 </main>
-<script src="/static/app.js?v=34.1"></script>
+<script src="/static/app.js?v=35"></script>
 </body>
 </html>

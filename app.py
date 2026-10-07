@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V34'
+BUILD_VERSION = 'V35'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -852,6 +852,36 @@ def reconcile_time_errors(errors):
     return out
 
 
+def reconcile_title_errors(errors):
+    """Merge missing+extra rows at the same date/time/hall into one title error."""
+    missing = [(i, x) for i, x in enumerate(errors) if x.get('type') == 'missing']
+    extra = [(i, x) for i, x in enumerate(errors) if x.get('type') == 'extra']
+    paired_m, paired_x, merged = set(), set(), []
+    for mi, m in missing:
+        e = m.get('expected', {})
+        candidates = []
+        for xi, x in extra:
+            if xi in paired_x:
+                continue
+            w = x.get('web', {})
+            if e.get('date') != w.get('date') or e.get('time') != w.get('time'):
+                continue
+            hm = hall_match(e.get('hall',''), w.get('hall',''))
+            if hm is True:
+                candidates.append((xi, x))
+        if len(candidates) == 1:
+            xi, x = candidates[0]
+            paired_m.add(mi); paired_x.add(xi)
+            merged.append({'type':'title','expected':e,'web':x.get('web',{})})
+    out=[]
+    for i,x in enumerate(errors):
+        if (x.get('type')=='missing' and i in paired_m) or (x.get('type')=='extra' and i in paired_x):
+            continue
+        out.append(x)
+    out.extend(merged)
+    return out
+
+
 def compact_show(item):
     return {
         'date': item.get('date', ''), 'time': item.get('time', ''),
@@ -912,6 +942,18 @@ def _selected_keys_from_request():
     if not raw:
         return None
     return {x for x in raw.split('|||') if x}
+
+
+def _selected_halls_from_request():
+    raw = request.form.get('selected_halls', '').strip()
+    if not raw:
+        return None
+    return {x for x in raw.split('|||') if x}
+
+
+def _hall_number(value):
+    nums = re.findall(r'\d+', norm(value))
+    return nums[-1] if nums else ''
 
 
 def _reserve_unselected_web(unselected_expected, web):
@@ -1040,12 +1082,15 @@ def check_day():
         day = (start + timedelta(days=day_index)).isoformat()
         day_all = [x for x in exp_all if x['date'] == day]
         selected_keys = _selected_keys_from_request()
-        exp = day_all if selected_keys is None else [x for x in day_all if _selection_key(x) in selected_keys]
-        unselected = [] if selected_keys is None else [x for x in day_all if _selection_key(x) not in selected_keys]
+        selected_halls = _selected_halls_from_request()
+        hall_scope = day_all if selected_halls is None else [x for x in day_all if _hall_number(x.get('hall','')) in selected_halls]
+        exp = hall_scope if selected_keys is None else [x for x in hall_scope if _selection_key(x) in selected_keys]
+        unselected = [] if selected_keys is None else [x for x in hall_scope if _selection_key(x) not in selected_keys]
         titles = known_titles_from_expected(exp_all)
-        web, url, diagnostic = scrape_day_safe(cinema, day, titles)
+        web_all, url, diagnostic = scrape_day_safe(cinema, day, titles)
+        web = web_all if selected_halls is None else [x for x in web_all if _hall_number(x.get('hall','')) in selected_halls]
         notes = learn_quickbook_versions(exp, web)
-        if not web and exp:
+        if not web_all and exp:
             return jsonify({'ok': False, 'error': f'Cinema City nevrátilo dáta pre {day}.', 'diagnostic': diagnostic}), 502
         errors = []
         used = _reserve_unselected_web(unselected, web)
@@ -1066,9 +1111,15 @@ def check_day():
                 errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
         selected_title_norms = {norm(x.get('film','')) for x in exp}
         for i, w in enumerate(web):
-            if i not in used and (selected_keys is None or norm(w.get('film','')) in selected_title_norms):
+            same_slot_as_selected = any(
+                e.get('date') == w.get('date') and e.get('time') == w.get('time')
+                and hall_match(e.get('hall',''), w.get('hall','')) is True
+                for e in exp
+            )
+            if i not in used and (selected_keys is None or norm(w.get('film','')) in selected_title_norms or same_slot_as_selected):
                 errors.append({'type': 'extra', 'web': compact_show(w)})
         errors = reconcile_time_errors(errors)
+        errors = reconcile_title_errors(errors)
         errors = filter_noncontradictory_version_errors(errors)
         return jsonify({'ok': True, 'day': day, 'expected': len(exp), 'web': len(web),
                         'errors': errors, 'diagnostic': diagnostic, 'version_notes': notes, 'url': url, 'build': BUILD_VERSION})
@@ -1133,6 +1184,7 @@ def check():
             if i not in used:
                 errors.append({'type': 'extra', 'web': w})
         errors = reconcile_time_errors(errors)
+        errors = reconcile_title_errors(errors)
         errors = filter_noncontradictory_version_errors(errors)
 
         return jsonify({
