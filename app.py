@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V27'
+BUILD_VERSION = 'V28'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -437,7 +437,11 @@ def _quickbook_event_to_web(event, film, requested_day):
     event_blob = ' '.join(_flatten_values(event))
     attrs = canon_attributes(event_blob)
     original_language, mode, target = _quickbook_language_data(event, film)
-    version = ' '.join(x for x in (mode, target) if x)
+    # Cinema City SK: when no dubbing/subtitle localisation is present,
+    # the screening is the Slovak/original Slovak version. Show that explicitly
+    # instead of an empty value. This is display data; comparison still uses
+    # structured mode/target fields and therefore does not invent SUB/DUB.
+    version = ' '.join(x for x in (mode, target) if x) if mode else 'Slovak'
 
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
