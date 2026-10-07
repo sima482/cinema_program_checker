@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V24'
+BUILD_VERSION = 'V25'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -134,6 +134,8 @@ def expected_from_excel(data, cinema, start):
                         'date': target.isoformat(), 'time': tm, 'film': film,
                         'original': original, 'hall': hall,
                         'attribute': attr, 'original_language': original_language, 'version': subdub,
+                        'original_language_code': excel_original_code,
+                        'localization_mode': excel_loc_mode, 'localization_language': excel_loc_lang,
                     })
     return out
 
@@ -437,6 +439,8 @@ def _quickbook_event_to_web(event, film, requested_day):
     return {
         'date': day, 'time': tm, 'film': film_name, 'attribute': ' '.join(attrs),
         'version': version, 'original_language': original_language, 'hall': hall,
+        'original_language_code': _language_code(original_language) or original_language,
+        'localization_mode': mode, 'localization_language': target,
         # Keep Cinema City's structured language/presentation metadata internally.
         # It is used below to learn the meaning of SK Quickbook presentation codes
         # from the whole week instead of guessing that the original film language
@@ -693,6 +697,27 @@ def version_match(expected, actual):
     return True
 
 
+def structured_localization_match(expected_item, web_item):
+    """Compare Excel G to Quickbook structured localisation; no reparsing display strings."""
+    em = str(expected_item.get('localization_mode') or '').upper()
+    el = str(expected_item.get('localization_language') or '').upper()
+    wm = str(web_item.get('localization_mode') or '').upper()
+    wl = str(web_item.get('localization_language') or '').upper()
+    return em == wm and el == wl
+
+
+def structured_original_language_match(expected_item, web_item):
+    """Compare Excel F to Quickbook original language when Excel specifies it."""
+    e = str(expected_item.get('original_language_code') or _language_code(expected_item.get('original_language','')) or '').upper()
+    w = str(web_item.get('original_language_code') or _language_code(web_item.get('original_language','')) or '').upper()
+    if not e:
+        return True
+    # If Quickbook genuinely omits original language, do not fabricate a different language.
+    if not w:
+        return True
+    return e == w
+
+
 def explicit_version_conflict(expected, actual):
     """Single source of truth used by all check endpoints."""
     return not version_match(expected, actual)
@@ -772,6 +797,9 @@ def compact_show(item):
         'film': item.get('film', ''), 'hall': item.get('hall', ''),
         'attribute': item.get('attribute', ''), 'original_language': item.get('original_language', ''),
         'version': item.get('version', ''),
+        'original_language_code': item.get('original_language_code', ''),
+        'localization_mode': item.get('localization_mode', ''),
+        'localization_language': item.get('localization_language', ''),
     }
 
 
@@ -934,9 +962,9 @@ def check_day():
                 errors.append({'type': 'hall', 'expected': compact_show(e), 'web': compact_show(w)})
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
-            if not original_language_match(e.get('original_language', ''), w.get('original_language', '')):
+            if not structured_original_language_match(e, w):
                 errors.append({'type': 'original_language', 'expected': compact_show(e), 'web': compact_show(w)})
-            if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
+            if not structured_localization_match(e, w):
                 errors.append({'type': 'version', 'expected': compact_show(e), 'web': compact_show(w)})
         for i, w in enumerate(web):
             if i not in used:
@@ -997,9 +1025,9 @@ def check():
             w = web[idx]
             if not attributes_match(e['attribute'], w['attribute']):
                 errors.append({'type': 'attribute', 'expected': e, 'web': w})
-            if not original_language_match(e.get('original_language', ''), w.get('original_language', '')):
+            if not structured_original_language_match(e, w):
                 errors.append({'type': 'original_language', 'expected': e, 'web': w})
-            if explicit_version_conflict(e.get('version', ''), w.get('version', '')):
+            if not structured_localization_match(e, w):
                 errors.append({'type': 'version', 'expected': e, 'web': w})
 
         for i, w in enumerate(web):
