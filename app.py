@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V31'
+BUILD_VERSION = 'V32'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {

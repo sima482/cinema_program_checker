@@ -25,13 +25,14 @@
       <div id="day-checks" style="display:flex;gap:14px;flex-wrap:wrap"></div>
       <div class="small" style="margin-top:7px;opacity:.8">Označ iba dni, ktoré chceš kontrolovať.</div>
     </div>
-    <div style="margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
+    <div id="film-section" style="position:relative;margin:16px 0;padding:14px 16px;border:1px solid rgba(255,255,255,.14);border-radius:12px">
       <div style="font-weight:800;margin-bottom:10px">5. Filmy na kontrolu</div>
       <button id="loadfilms" type="button" class="secondary">Načítať filmy z Excelu</button>
       <button id="film-toggle" type="button" class="secondary" aria-expanded="false" style="display:none;margin-top:10px;width:100%;text-align:left;justify-content:space-between">🎬 Filmy na kontrolu: Všetky filmy <span>▼</span></button>
-      <div id="film-panel" style="display:none;margin-top:10px;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px">
+      <div id="film-panel" style="display:none;position:absolute;z-index:50;left:16px;right:16px;top:100%;margin-top:6px;padding:12px 14px;background:#0d2c3b;border:1px solid rgba(255,255,255,.22);border-radius:10px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
+        <input id="film-search" type="search" placeholder="Hľadať film…" autocomplete="off" style="width:100%;box-sizing:border-box;margin-bottom:10px">
         <div id="filmtools" style="display:none;margin-bottom:10px"><button id="allfilms" type="button" class="secondary">Vybrať všetky</button> <button id="nofilms" type="button" class="secondary">Zrušiť všetky</button></div>
-        <div id="film-list" style="display:flex;gap:10px 18px;flex-wrap:wrap"></div>
+        <div id="film-list" style="display:flex;flex-direction:column;gap:4px;max-height:330px;overflow-y:auto;padding-right:4px"></div>
       </div>
       <div class="small" style="margin-top:7px;opacity:.8">Rôzne verzie (SUB/DUB, jazyk, 3D, VIP, 4DX…) sú samostatné položky.</div>
     </div>
@@ -44,6 +45,6 @@
   <section id="status" class="status">Nahraj Excel, vyber kino, obdobie, dni a filmy na kontrolu.</section>
   <section id="results" class="results"></section>
 </main>
-<script src="/static/app.js?v=31"></script>
+<script src="/static/app.js?v=32"></script>
 </body>
 </html>
