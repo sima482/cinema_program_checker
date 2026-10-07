@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V21'
+BUILD_VERSION = 'V22'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -596,8 +596,7 @@ def attributes_match(expected, actual):
 def _version_parts(value, excel=False):
     """Extract only explicit SUB/DUB and language information.
 
-    Missing pieces stay empty. This matters because a bare `SUB` in Excel
-    means "subtitled, language unspecified", not "different from Slovak SUB".
+    For Excel, bare SUB/DUB means Slovak SUB/DUB. Cinema City values stay literal: missing mode or language stays unknown.
     """
     n = norm(value)
     tokens = set(n.split())
@@ -619,6 +618,10 @@ def _version_parts(value, excel=False):
         if any(norm(v) in tokens for v in variants):
             lang = canonical
             break
+    # In the Cinema City SK schedule Excel, a bare SUB/DUB means Slovak.
+    # Foreign languages are written explicitly (e.g. Czech SUB).
+    if excel and mode and not lang:
+        lang = 'SK'
     return mode, lang
 
 
@@ -627,7 +630,7 @@ def version_match(expected, actual):
 
     Missing detail is never a mismatch. Examples:
       SUB vs Slovak SUB -> True
-      SUB vs Czech SUB -> True
+      SUB vs Czech SUB -> False
       SUB vs Slovak -> True
       Czech SUB vs Slovak SUB -> False
       Czech DUB vs DUB CS -> True
@@ -759,7 +762,7 @@ def no_cache(response):
 def api_version():
     cases = [
         ('SUB', 'Slovak SUB', True),
-        ('SUB', 'Czech SUB', True),
+        ('SUB', 'Czech SUB', False),
         ('Czech SUB', 'Czech SUB', True),
         ('Czech SUB', 'Slovak SUB', False),
         ('Czech DUB', 'DUB CS', True),
