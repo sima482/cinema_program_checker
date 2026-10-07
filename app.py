@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V35'
+BUILD_VERSION = 'V36'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -679,33 +679,33 @@ def _hall_number(value):
     sig = hall_signature(value)
     return sig[1] if sig and sig[1] else ''
 
-def attributes_match(expected, actual, hall=''):
-    """Compare screening attributes in both directions with Eurovea hall rules.
+def attributes_match(expected, actual, hall='', cinema=''):
+    """Compare screening attributes in both directions.
 
-    Excel `Infinity` and web `Infinity Vision` canonicalize to the same value.
-    Laser Barco is special: it may be omitted from Excel, but on the web it is
-    required in halls 5,6,7,8,9,10,12,13 and forbidden in every other hall.
-    VIP is required on the web in halls 1,2,3,4. Other attributes must agree
-    between Excel and Cinema City in both directions.
+    The hall equipment rules are specific to Eurovea only:
+    halls 1-4 require VIP; halls 5,6,7,8,9,10,12,13 require Laser Barco,
+    and Laser Barco is forbidden in other Eurovea halls. In Eurovea only,
+    Laser Barco may be omitted from Excel. Other cinemas use ordinary
+    Excel<->web attribute comparison without Eurovea hall assumptions.
     """
     e = set(canon_attributes(expected))
     w = set(canon_attributes(actual))
-    hn = _hall_number(hall)
 
-    # Hall-specific web requirements.
-    if hn in LASER_BARCO_HALLS:
-        if 'Laser Barco' not in w:
+    if norm(cinema) == 'eurovea':
+        hn = _hall_number(hall)
+        if hn in LASER_BARCO_HALLS:
+            if 'Laser Barco' not in w:
+                return False
+        elif 'Laser Barco' in w:
             return False
-    elif 'Laser Barco' in w:
-        return False
 
-    if hn in VIP_HALLS and 'VIP' not in w and 'VIP 3D' not in w:
-        return False
+        if hn in VIP_HALLS and 'VIP' not in w and 'VIP 3D' not in w:
+            return False
 
-    # Laser Barco does not have to be written in Excel, so it is excluded from
-    # the ordinary Excel<->web equality check. The web rule above is authoritative.
-    e.discard('Laser Barco')
-    w.discard('Laser Barco')
+        # Eurovea-only exception: Laser Barco does not have to be written in Excel.
+        e.discard('Laser Barco')
+        w.discard('Laser Barco')
+
     return e == w
 
 
@@ -1103,7 +1103,7 @@ def check_day():
             hm = hall_match(e.get('hall', ''), w.get('hall', ''))
             if hm is False:
                 errors.append({'type': 'hall', 'expected': compact_show(e), 'web': compact_show(w)})
-            if not attributes_match(e['attribute'], w['attribute'], e.get('hall', '') or w.get('hall', '')):
+            if not attributes_match(e['attribute'], w['attribute'], e.get('hall', '') or w.get('hall', ''), cinema):
                 errors.append({'type': 'attribute', 'expected': compact_show(e), 'web': compact_show(w)})
             if not structured_original_language_match(e, w):
                 errors.append({'type': 'original_language', 'expected': compact_show(e), 'web': compact_show(w)})
@@ -1173,7 +1173,7 @@ def check():
                 continue
             used.add(idx)
             w = web[idx]
-            if not attributes_match(e['attribute'], w['attribute'], e.get('hall', '') or w.get('hall', '')):
+            if not attributes_match(e['attribute'], w['attribute'], e.get('hall', '') or w.get('hall', ''), cinema):
                 errors.append({'type': 'attribute', 'expected': e, 'web': w})
             if not structured_original_language_match(e, w):
                 errors.append({'type': 'original_language', 'expected': e, 'web': w})
