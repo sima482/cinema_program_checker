@@ -5,7 +5,7 @@ from io import BytesIO
 import os, re, unicodedata, requests
 
 app = Flask(__name__)
-BUILD_VERSION = 'V36'
+BUILD_VERSION = 'V37'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -705,6 +705,23 @@ def attributes_match(expected, actual, hall='', cinema=''):
         # Eurovea-only exception: Laser Barco does not have to be written in Excel.
         e.discard('Laser Barco')
         w.discard('Laser Barco')
+
+    elif norm(cinema) == 'aupark':
+        hn = _hall_number(hall)
+        required = {
+            '1': {'Super Screen', 'Laser Barco'},
+            '2': {'Comfort'}, '3': {'Comfort'},
+            '4': {'Comfort'}, '5': {'Comfort'},
+            '9': {'4DX'},
+        }.get(hn, set())
+        # Hall equipment must be present on the website, but may be omitted
+        # from Excel. 3D variants count as the corresponding hall equipment.
+        def has_equipment(attrs, equipment):
+            return equipment in attrs or equipment + ' 3D' in attrs
+        if any(not has_equipment(w, item) for item in required):
+            return False
+        e = {item for item in e if item not in required and not (item.endswith(' 3D') and item[:-3] in required)}
+        w = {item for item in w if item not in required and not (item.endswith(' 3D') and item[:-3] in required)}
 
     return e == w
 
