@@ -2,10 +2,10 @@ from flask import Flask, render_template, request, jsonify
 from openpyxl import load_workbook
 from datetime import datetime, timedelta, date
 from io import BytesIO
-import os, re, unicodedata, requests
+import os, re, unicodedata, requests, zipfile
 
 app = Flask(__name__)
-BUILD_VERSION = 'V37'
+BUILD_VERSION = 'V38'
 
 # Current Cinema City SK cinema identifiers.
 CINEMAS = {
@@ -87,6 +87,27 @@ def header_weekday(value):
     return None
 
 
+def normalize_invalid_sheet_states(data):
+    """Repair only invalid `state="frozen"` sheet metadata in CC exports.
+
+    Excel's frozen panes are unrelated to sheet visibility; openpyxl rejects
+    `frozen` as a sheet visibility state. Preserve all other ZIP members.
+    """
+    with zipfile.ZipFile(BytesIO(data), 'r') as source:
+        xml = source.read('xl/workbook.xml')
+        fixed, count = re.subn(
+            rb'(<(?:[A-Za-z_][\w.-]*:)?sheet\b[^>]*?\sstate=)"frozen"',
+            rb'\g<1>"visible"', xml,
+        )
+        if not count:
+            return data
+        result = BytesIO()
+        with zipfile.ZipFile(result, 'w') as target:
+            for member in source.infolist():
+                target.writestr(member, fixed if member.filename == 'xl/workbook.xml' else source.read(member.filename))
+        return result.getvalue()
+
+
 def expected_from_excel(data, cinema, start):
     """Read the CC SK schedule.
 
@@ -94,7 +115,7 @@ def expected_from_excel(data, cinema, start):
     A showtime without a day restriction applies to every day Thu-Wed.
     `only Su Sa` and `w/o Su Sa` restrict those individual showtimes.
     """
-    wb = load_workbook(BytesIO(data), data_only=True)
+    wb = load_workbook(BytesIO(normalize_invalid_sheet_states(data)), data_only=True)
     sheet = next((s for s in wb.sheetnames if norm(s) == norm(cinema)), None)
     if not sheet:
         raise ValueError(f'Hárok {cinema} v Exceli chýba.')
